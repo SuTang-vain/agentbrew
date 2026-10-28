@@ -1,0 +1,28 @@
+{
+  "name": "agentbrew",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first Pi and herdr environment updates and health checks",
+  "type": "module",
+  "bin": {
+    "agentbrew": "dist/bin/agentbrew.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs/PRD.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/bin/agentbrew.js",
+    "sandbox": "npm run build && bash scripts/sandbox.sh",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.sandbox/
+*.tgz
+.agentbrew/
+*.log
+.DS_Store
