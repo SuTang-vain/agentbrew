@@ -37,7 +37,9 @@ node dist/bin/agentbrew.js --help
 ## Try it without touching real configuration
 
 ```bash
-cd /Users/4paradigm/projexts/agentbrew
+git clone https://github.com/SuTang-vain/agentbrew.git
+cd agentbrew
+npm install
 npm run sandbox -- --scenario bundle
 ```
 
