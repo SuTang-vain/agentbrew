@@ -147,6 +147,7 @@ function dryRunUpdate(context: Context, ownership: OwnershipState | null, bundle
       host: inspection.host,
       plan: describePiPlan(context),
       bundle: bundleSummary(bundle),
+      unmanagedResources: unmanagedNativeResources(context, ownership),
       note: "Pi is re-resolved after its native update; the target host version is not predicted",
     };
   } catch (error) {

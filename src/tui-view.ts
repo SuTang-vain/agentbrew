@@ -91,24 +91,61 @@ function wrappedResult(result: CommandResult, style: TerminalStyle, summary = `r
 
 function previewSummary(result: CommandResult): string {
   const data = result.data as any;
+  const unmanaged = Array.isArray(data?.unmanagedResources) ? data.unmanagedResources : [];
+  if (result.status === "not-executed" && unmanaged.length > 0) {
+    return `preview: blocked · ${unmanaged.length} resource(s) not managed · no writes`;
+  }
   if (data?.nativeMode) return "preview: local checks only · upstream versions unknown · no writes";
   if (result.status !== "success") return `preview: ${result.status} · no writes`;
   const resolution = data?.resolution;
   const updates = (resolution?.host?.action === "update" ? 1 : 0)
     + (resolution?.resources ?? []).filter((resource: any) => resource.action === "update").length;
-  return updates > 0
-    ? `preview: ready · ${updates} update(s) · no writes`
-    : "preview: up to date · no writes";
+  if (updates > 0) return `preview: ready · ${updates} update(s) · no writes`;
+  if (data?.npmRequired) return "preview: no version updates · repairs planned · no writes";
+  return "preview: up to date · no writes";
 }
 
-function nativeGuidance(style: TerminalStyle): string[] {
+function nativeGuidance(style: TerminalStyle, data: any): string[] {
+  const lines = [style.paint("Native preview: versions are not resolved without registered sources.", "warning")];
+  if (data?.host) lines.push(`  host ${data.host.version} (${data.host.source}) · target version not predicted`);
+  lines.push(
+    "Register layers for a version-resolved plan:",
+    "  agentbrew source set --layer personal=/absolute/personal.json",
+    "Or draft a personal layer from the installed resources:",
+    "  agentbrew adopt --output personal.proposed.json",
+    "Native update: agentbrew update",
+  );
+  return lines;
+}
+
+function ownershipBlock(style: TerminalStyle, result: CommandResult, unmanaged: string[]): string[] {
+  const listed = unmanaged.length <= 4 ? unmanaged.join(", ") : `${unmanaged.slice(0, 4).join(", ")} (+${unmanaged.length - 4} more)`;
   return [
-    style.paint("This target has no registered sources, so upstream versions cannot be resolved.", "warning"),
+    style.paint(previewSummary(result), "warning"),
+    "Agentbrew does not update resources it does not manage.",
+    "",
+    "Authorize them once, then re-check:",
+    "  agentbrew init        (choose Manage, then select all)",
+    "",
+    `unmanaged: ${listed}`,
+  ];
+}
+
+function sourcesGuidance(style: TerminalStyle, data: any): string[] {
+  if (!data || data.registered !== false) return [];
+  if (data.layerOrigin === "explicit") {
+    return [
+      style.paint("These layers are active for this run only.", "warning"),
+      "Persist them for everyday commands:",
+      "  agentbrew source set --layer …",
+    ];
+  }
+  return [
+    style.paint("No per-target source binding is registered.", "warning"),
     "Register the layers this machine uses:",
     "  agentbrew source set --layer personal=/absolute/personal.json",
-    "Or take ownership of existing resources first:",
-    "  agentbrew init",
-    "Native shortcut without version prediction: agentbrew update",
+    "Or draft a personal layer from the installed resources:",
+    "  agentbrew adopt --output personal.proposed.json",
   ];
 }
 
@@ -135,7 +172,9 @@ function overviewSummary(model: TuiModel, style: TerminalStyle): string[] {
     `${style.paint("herdr       ", "muted")}${herdr.available ? `${herdr.version ?? "available"} · integration ${herdr.integration}` : "unavailable"}`,
     `${style.paint("Health      ", "muted")}${failures} failing · ${warnings} warning(s) · ${differences.length} difference(s)`,
     `${style.paint("Sources     ", "muted")}${sourceText}${model.sources?.error ? ` · ${model.sources.error}` : ""}`,
-    `${style.paint("Safety      ", "muted")}${style.paint("Read-only · no state, lock, update, or selftest", "accent")}`,
+    `${style.paint("Safety      ", "muted")}${model.writeEnabled
+      ? style.paint("Writes only after confirmation · no selftest", "warning")
+      : style.paint("Read-only · no state, lock, update, or selftest", "accent")}`,
   ];
   if (model.notice) summary.unshift(style.paint(model.notice, "warning"));
   return summary;
@@ -147,9 +186,10 @@ const HELP_LINES = [
   "  1–6     Jump directly to a page",
   "  Enter   Open the selected page",
   "  r       Refresh the current page, or re-check updates on a preview",
+  "  u       Apply the preview (only with --write, after confirmation)",
   "  Esc     Return to Overview, or to the page Help was opened from",
   "  ?       Open this help without discarding the current page",
-  "  q       Quit after any active read-only operation settles",
+  "  q       Quit after any active operation settles",
   "  Ctrl+C  Quit with the same terminal restoration",
   "",
   "Write operations remain explicit CLI commands:",
@@ -158,6 +198,7 @@ const HELP_LINES = [
   "  agentbrew update",
   "  agentbrew --write      # enable u apply in this workspace",
   "  agentbrew source set --layer personal=/absolute/path.json",
+  "  agentbrew adopt --output personal.proposed.json",
   "  agentbrew source list",
   "  agentbrew source clear",
   "",
@@ -189,7 +230,8 @@ function footerText(model: TuiModel, style: TerminalStyle): string {
     const writing = model.page === "applied";
     if (model.exitRequested) return writing ? "Finishing the update before exit…" : "Finishing the read-only operation before exit…";
     const elapsed = model.busySince ? Math.max(0, Math.floor((Date.now() - model.busySince) / 1000)) : 0;
-    return fitHints([`${writing ? "applying" : "read-only"} · ${elapsed}s`, "q exits when it settles"], style.width, ["q exits when it settles"]);
+    if (writing) return fitHints([`applying · ${elapsed}s`, "esc disabled", "q waits"], style.width, ["q waits"]);
+    return fitHints([`read-only · ${elapsed}s`, "q exits when it settles"], style.width, ["q exits when it settles"]);
   }
   if (model.page === "confirm") {
     return fitHints(["↑/↓ select", "enter choose", "esc back", "? help", "q quit"], style.width, ["esc back", "? help"]);
@@ -250,7 +292,12 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     if (body.length < bodyHeight && windowed && end > start) {
       body.push(style.paint(`  ${start + 1}–${end}/${TUI_MENU_ITEMS.length} pages`, "muted"));
     }
-    if (body.length < bodyHeight && item.description) body.push(style.paint(`  ${item.description}`, "muted"));
+    if (body.length < bodyHeight && item.description) {
+      const description = item.id === "update" && model.writeEnabled
+        ? "Resolve a dry-run; apply only after confirmation"
+        : item.description;
+      body.push(style.paint(`  ${description}`, "muted"));
+    }
   } else if (model.page === "confirm") {
     const confirm = model.confirm;
     const index = model.confirmIndex ?? 1;
@@ -276,13 +323,24 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     body = [style.paint(model.notice ?? "Loading read-only result…", "muted")];
   } else {
     const preview = model.page === "update";
-    body = wrappedResult(model.result, style, preview ? previewSummary(model.result) : undefined);
-    if (preview && (model.result.data as any)?.nativeMode) {
-      body = [...nativeGuidance(style), "", ...body];
-    }
-    if (model.page === "applied"
-      && model.result.steps.some((step) => step.status === "success" && ["pi-host", "pi-update", "npm-install"].includes(step.id))) {
-      body = [style.paint("Restart Pi to load the updated host and extensions.", "warning"), "", ...body];
+    const data = model.result.data as any;
+    const unmanaged = Array.isArray(data?.unmanagedResources) ? data.unmanagedResources : [];
+    if (preview && model.result.status === "not-executed" && unmanaged.length > 0) {
+      body = ownershipBlock(style, model.result, unmanaged);
+    } else {
+      const rendered = wrappedResult(model.result, style, preview ? previewSummary(model.result) : undefined);
+      const [summary, ...details] = rendered;
+      const extras: string[] = [];
+      if (preview && data?.nativeMode) extras.push("", ...nativeGuidance(style, data));
+      if (model.page === "sources") {
+        const guidance = sourcesGuidance(style, data);
+        if (guidance.length > 0) extras.push("", ...guidance);
+      }
+      if (model.page === "applied"
+        && model.result.steps.some((step) => step.status === "success" && ["pi-host", "pi-update", "npm-install"].includes(step.id))) {
+        extras.push("", style.paint("Restart Pi to load the updated host and extensions.", "warning"));
+      }
+      body = [summary!, ...extras, ...details];
     }
     if (model.cachedAt) {
       const age = Math.max(0, Math.floor((Date.now() - model.cachedAt) / 1000));

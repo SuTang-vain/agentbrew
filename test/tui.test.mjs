@@ -309,7 +309,72 @@ test("update preview states readiness, re-check, and native next steps", async (
   const nativeFrame = currentFrame(s);
   assert.match(nativeFrame, /preview: local checks only · upstream versions unknown · no writes/);
   assert.match(nativeFrame, /agentbrew source set --layer personal=/);
-  assert.match(nativeFrame, /agentbrew init/);
+  assert.match(nativeFrame, /Native update: agentbrew update/);
+  assert.match(nativeFrame, /agentbrew adopt --output personal\.proposed\.json/);
+  assert.doesNotMatch(nativeFrame, /agentbrew init/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
+test("an ownership-blocked preview explains the required init step", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  const unmanaged = ["pi.host", "npm:a", "npm:b", "npm:c", "npm:d", "npm:e", "npm:f"];
+  const blocked = {
+    schemaVersion: 1,
+    command: "update",
+    status: "not-executed",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [],
+    differences: [],
+    checks: [],
+    error: `native Pi update would exceed local ownership: ${unmanaged.join(", ")}; rerun init to select resources explicitly`,
+    data: { nativeMode: true, unmanagedResources: unmanaged },
+  };
+  const status = runTui(context, s.streams, { update: async () => blocked });
+  await settle();
+  s.input.write("4");
+  await settle();
+  const frame = currentFrame(s);
+  assert.match(frame, /preview: blocked · 7 resource\(s\) not managed · no writes/);
+  assert.match(frame, /agentbrew init\s+\(choose Manage/);
+  assert.match(frame, /unmanaged: pi\.host, npm:a, npm:b, npm:c \(\+3 more\)/);
+  assert.doesNotMatch(frame, /would exceed local ownership/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
+test("the Sources page explains how to persist a binding", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const status = runCli([], s.streams);
+  await settle();
+  s.input.write("5");
+  await settle();
+  const frame = currentFrame(s);
+  assert.match(frame, /No per-target source binding is registered/);
+  assert.match(frame, /agentbrew source set --layer personal=/);
+  assert.match(frame, /agentbrew adopt --output personal\.proposed\.json/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
+test("write mode changes the safety line, menu description, and help", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  const status = runTui(context, s.streams, {}, { write: true });
+  await settle();
+  assert.match(currentFrame(s), /Writes only after confirmation/);
+  s.input.write("\x1b[B\x1b[B\x1b[B");
+  await settle();
+  assert.match(currentFrame(s), /apply only after confirmation/);
+  s.input.write("?");
+  await settle();
+  assert.match(currentFrame(s), /any active operation settles/);
+  assert.match(currentFrame(s), /Apply the preview \(only with --write/);
   s.input.write("q");
   assert.equal(await status, 0);
 });
@@ -407,6 +472,43 @@ test("--write confirms before applying and reports the result", async (t) => {
   assert.match(currentFrame(s), /Agentbrew · Update preview/);
   s.input.write("q");
   assert.equal(await status, 0);
+  assert.match(s.text(), /Agentbrew closed · last update: success/);
+  assert.doesNotMatch(s.text(), /Agentbrew closed · no resources changed/);
+});
+
+test("a repairs-only preview is not reported as up to date", (t) => {
+  const f = fixture(t);
+  const output = new PassThrough();
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const style = createTerminalStyle(output, { NO_COLOR: "1" });
+  const result = {
+    schemaVersion: 1,
+    command: "update",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [],
+    differences: [],
+    checks: [],
+    data: {
+      nativeMode: false,
+      npmRequired: true,
+      resolution: { host: { currentVersion: "1.4.0", targetVersion: "1.4.0", action: "keep" }, resources: [] },
+    },
+  };
+  const frame = stripVTControlCharacters(renderTuiFrame({
+    target: f.agentDir,
+    page: "update",
+    menuIndex: 0,
+    busy: false,
+    exitRequested: false,
+    scroll: 0,
+    result,
+  }, style, 16).lines.join("\n"));
+  assert.match(frame, /preview: no version updates · repairs planned · no writes/);
+  assert.doesNotMatch(frame, /preview: up to date/);
 });
 
 test("a successful preview is cached for the session and r refreshes it", async (t) => {
@@ -605,6 +707,11 @@ test("TUI frames fit width and height, retain the selected item, and clamp scrol
   model.busy = true;
   model.busySince = Date.now() - 3500;
   assert.match(stripVTControlCharacters(renderTuiFrame(model, narrow, 12).lines.join("\n")), /read-only · \d+s/);
+  model.page = "applied";
+  const applying = stripVTControlCharacters(renderTuiFrame(model, narrow, 12).lines.join("\n"));
+  assert.match(applying, /applying · \d+s/);
+  assert.match(applying, /esc disabled/);
+  model.page = "health";
   model.busy = false;
   model.busySince = undefined;
   model.page = "overview";

@@ -152,6 +152,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
     let ticker: NodeJS.Timeout | undefined;
     let controller: AbortController | undefined;
     let lastFrame = "";
+    let wroteTarget = false;
     let previewCache: { key: string; result: CommandResult; at: number } | undefined;
 
     const stopTicker = (): void => {
@@ -198,9 +199,11 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       cleanup();
       if (error) {
         const message = redact(error instanceof Error ? error.message : String(error));
-        safeWrite(io.error ?? output, `Agentbrew closed after an error · no resources changed\n${message}\n`);
+        const outcome = wroteTarget ? "the update may have changed resources" : "no resources changed";
+        safeWrite(io.error ?? output, `Agentbrew closed after an error · ${outcome}\n${message}\n`);
       } else {
-        safeWrite(output, "Agentbrew closed · no resources changed\n");
+        const outcome = wroteTarget ? `last update: ${model.result?.status ?? "unknown"}` : "no resources changed";
+        safeWrite(output, `Agentbrew closed · ${outcome}\n`);
       }
       resolve(code);
     };
@@ -319,6 +322,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         } else if (page === "update") {
           model.result = await operations.update(live);
         } else if (page === "applied") {
+          wroteTarget = true;
           model.result = await operations.apply(live);
         } else if (page === "sources") {
           model.result = await operations.sources(live);
