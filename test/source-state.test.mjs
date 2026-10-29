@@ -74,7 +74,7 @@ test("oversized, malformed, and symlink source state is never loaded", (t) => {
   const malformed = fixture(t);
   fs.mkdirSync(malformed.stateDir, { recursive: true });
   fs.writeFileSync(path.join(malformed.stateDir, "sources.json"), "{");
-  assert.throws(() => readSourceRegistration(context(malformed)), /JSON/);
+  assert.throws(() => readSourceRegistration(context(malformed)), /sources\.json is not valid JSON/);
   fs.writeFileSync(path.join(malformed.stateDir, "sources.json"), "x".repeat(65 * 1024));
   assert.throws(() => readSourceRegistration(context(malformed)), /64 KiB/);
 

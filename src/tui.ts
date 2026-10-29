@@ -110,6 +110,23 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
     let requestedExitCode = 0;
     let inputBuffer = "";
     let escapeTimer: NodeJS.Timeout | undefined;
+    let ticker: NodeJS.Timeout | undefined;
+    let lastFrame = "";
+
+    const stopTicker = (): void => {
+      if (ticker) clearInterval(ticker);
+      ticker = undefined;
+    };
+    const startTicker = (): void => {
+      stopTicker();
+      ticker = setInterval(() => {
+        if (finished || !model.busy) {
+          stopTicker();
+          return;
+        }
+        draw();
+      }, 500);
+    };
 
     const safeWrite = (stream: NodeJS.WritableStream, text: string): void => {
       try {
@@ -121,6 +138,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       cleaned = true;
       input.off("data", onData);
       if (escapeTimer) clearTimeout(escapeTimer);
+      stopTicker();
       input.off("end", onEnd);
       input.off("error", onInputError);
       output.off("resize", onResize);
@@ -149,10 +167,12 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       if (finished || !started) return;
       try {
         const style = createTerminalStyle(output, io.env ?? process.env, true);
-        const height = Math.max(5, output.rows || 24);
-        const frame = renderTuiFrame(model, style, height);
+        const frame = renderTuiFrame(model, style, Math.max(5, (output.rows || 24) - 1));
         model.scroll = frame.scroll;
-        output.write(`\x1b[H\x1b[0J${frame.lines.join("\n")}\n`);
+        const text = `\x1b[H\x1b[0J${frame.lines.join("\n")}\n`;
+        if (text === lastFrame) return;
+        lastFrame = text;
+        output.write(text);
       } catch (error) {
         finish(1, error);
       }
@@ -174,6 +194,8 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.result = undefined;
       model.notice = page === "update" ? "Resolving a dry-run; no resources will be changed…" : "Reading local state…";
       model.busy = true;
+      model.busySince = Date.now();
+      startTicker();
       draw();
       try {
         if (page === "overview") {
@@ -195,7 +217,9 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       }
       if (finished) return;
       model.busy = false;
+      model.busySince = undefined;
       model.notice = undefined;
+      stopTicker();
       if (model.exitRequested) {
         finish(requestedExitCode);
         return;

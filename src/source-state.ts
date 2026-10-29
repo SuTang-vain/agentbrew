@@ -89,7 +89,13 @@ export function readSourceRegistration(context: Context): SourceRegistration | n
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("sources.json must be a regular non-symlink file");
   if (stat.size > MAX_SOURCE_STATE_BYTES) throw new Error("sources.json exceeds the 64 KiB limit");
-  return parseRegistration(context, JSON.parse(fs.readFileSync(file, "utf8")));
+  let value: unknown;
+  try {
+    value = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Error(`sources.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return parseRegistration(context, value);
 }
 
 export function writeSourceRegistration(context: Context, registration: SourceRegistration): void {

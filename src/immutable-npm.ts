@@ -147,6 +147,10 @@ export function installLockedNpmResources(context: Context, resources: LockedNpm
       throw new Error("npm changed the portable dependency manifest during locked installation");
     }
     const actualLock = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+    // Compare structure, never bytes: npm may rewrite formatting and reorder the
+    // root dependency object while installing from an otherwise identical lock.
+    // Content drift still fails closed; the reviewed plan is persisted separately
+    // as last-package-lock.plan.json for diagnosis.
     if (!isDeepStrictEqual(actualLock, lock)) {
       throw new Error("npm changed the reviewed package-lock content during locked installation");
     }

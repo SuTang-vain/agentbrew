@@ -1,6 +1,6 @@
 import type { EnvironmentEvaluation } from "./init.js";
 import { renderResult } from "./result-view.js";
-import type { TerminalStyle } from "./terminal.js";
+import { visibleWidth, type TerminalStyle } from "./terminal.js";
 import type { CommandResult } from "./types.js";
 
 export type TuiPage = "overview" | "health" | "changes" | "update" | "sources" | "help";
@@ -14,7 +14,7 @@ export interface TuiMenuItem {
 export const TUI_MENU_ITEMS: TuiMenuItem[] = [
   { id: "overview", label: "Overview", description: "Local environment, health summary, and active sources" },
   { id: "health", label: "Health", description: "Run static doctor checks; never run selftest implicitly" },
-  { id: "changes", label: "Changes", description: "Inspect configuration and generated-link differences" },
+  { id: "changes", label: "Differences", description: "Inspect configuration and generated-link differences" },
   { id: "update", label: "Update preview", description: "Resolve a dry-run only; no lock, installation, or update" },
   { id: "sources", label: "Sources", description: "Show explicit or registered configuration layers" },
   { id: "help", label: "Help", description: "Keyboard controls and explicit write-command boundaries" },
@@ -29,6 +29,7 @@ export interface TuiModel {
   sources?: CommandResult;
   result?: CommandResult;
   busy: boolean;
+  busySince?: number;
   exitRequested: boolean;
   scroll: number;
   notice?: string;
@@ -104,6 +105,12 @@ const HELP_LINES = [
   "  agentbrew update --dry-run",
   "  agentbrew update",
   "  agentbrew source set --layer personal=/absolute/path.json",
+  "  agentbrew source list",
+  "  agentbrew source clear",
+  "",
+  "Update preview may fetch release and npm metadata; it never writes.",
+  "If Sources reports an error, the binding is damaged: replace it with",
+  "source set, or remove <stateDir>/sources.json by hand.",
   "",
   "This TUI never applies plans, installs packages, changes source bindings, runs selftest, or updates Agentbrew itself.",
 ];
@@ -111,6 +118,27 @@ const HELP_LINES = [
 function visibleRange(index: number, count: number, maximum: number): { start: number; end: number } {
   const start = Math.max(0, Math.min(index - Math.floor(maximum / 2), count - maximum));
   return { start, end: Math.min(count, start + maximum) };
+}
+
+function fitHints(hints: string[], width: number, droppable: string[]): string {
+  let kept = [...hints];
+  for (const label of droppable) {
+    if (visibleWidth(kept.join(" · ")) <= width) break;
+    kept = kept.filter((hint) => hint !== label);
+  }
+  return kept.join(" · ");
+}
+
+function footerText(model: TuiModel, style: TerminalStyle): string {
+  if (model.busy) {
+    if (model.exitRequested) return "Finishing the read-only operation before exit…";
+    const elapsed = model.busySince ? Math.max(0, Math.floor((Date.now() - model.busySince) / 1000)) : 0;
+    return fitHints([`read-only · ${elapsed}s`, "q exits when it settles"], style.width, ["q exits when it settles"]);
+  }
+  const hints = model.page === "overview"
+    ? ["↑/↓ move", "enter open", "r refresh", "? help", "q quit"]
+    : ["↑/↓ scroll", "r refresh", "esc back", "? help", "q quit"];
+  return fitHints(hints, style.width, model.page === "overview" ? ["r refresh", "enter open"] : ["r refresh", "esc back"]);
 }
 
 export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: number): RenderedTuiFrame {
@@ -121,13 +149,9 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     style.paint(style.truncateMiddle(`Target  ${model.target}`, style.width), "muted"),
     style.rule(),
   ];
-  const footerText = model.busy
-    ? model.exitRequested ? "Finishing the read-only operation before exit…" : "Read-only operation in progress · q exits after completion"
-    : model.page === "overview"
-      ? "↑/↓ move · enter open · r refresh · ? help · q quit"
-      : "↑/↓ scroll · r refresh · esc back · ? help · q quit";
-  const footer = [style.rule(), style.paint(footerText, "muted")];
-  const bodyHeight = Math.max(1, height - header.length - footer.length);
+  const footerTextValue = footerText(model, style);
+  const footer = [style.rule(), style.paint(footerTextValue, "muted")];
+  const bodyHeight = Math.max(0, height - header.length - footer.length);
   let body: string[] = [];
   let scroll = 0;
 
@@ -161,9 +185,12 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     }
     body = visible;
   }
+  // Pad to the reserved frame height so the footer sits on the same row on every
+  // page instead of jumping when the body length changes.
+  if (body.length < bodyHeight) body = [...body, ...Array.from({ length: bodyHeight - body.length }, () => "")];
 
   return {
-    lines: [...header, ...body, ...footer].map((line) => style.truncate(line)),
+    lines: [...header, ...body.slice(0, bodyHeight), ...footer].map((line) => style.truncate(line)),
     scroll,
   };
 }

@@ -123,6 +123,11 @@ if [ "$1" = "install" ]; then
       lock.packages[""].dependencies = Object.fromEntries(Object.entries(lock.packages[""].dependencies).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
       fs.writeFileSync(lockFile, JSON.stringify(lock, null, 2) + "\\n");
     }
+    if (lock && process.env.MOCK_NPM_REORDER_LOCK === "1") {
+      // Simulate npm normalizing the root dependency object order during install.
+      lock.packages[""].dependencies = Object.fromEntries(Object.entries(lock.packages[""].dependencies).reverse());
+      fs.writeFileSync(lockFile, JSON.stringify(lock, null, 2) + "\\n");
+    }
     if (args.includes("--no-save")) {
       for (const spec of args.slice(1).filter((value) => !value.startsWith("-"))) {
         const at = spec.lastIndexOf("@");

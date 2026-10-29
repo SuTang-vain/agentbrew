@@ -90,7 +90,7 @@ test("bare interactive commands enter a persistent read-only TUI and restore on 
   }
 });
 
-test("Health, Changes, native Update preview, Sources, refresh, and Escape stay read-only", async (t) => {
+test("Health, Differences, native Update preview, Sources, refresh, and Escape stay read-only", async (t) => {
   const f = fixture(t);
   const s = session(f);
   const before = fs.readFileSync(path.join(f.npmDir, "package.json"), "utf8");
@@ -107,7 +107,7 @@ test("Health, Changes, native Update preview, Sources, refresh, and Escape stay 
   await new Promise((resolve) => setTimeout(resolve, 30));
   s.input.write("\x1b[B\r");
   await settle();
-  assert.match(currentFrame(s), /Agentbrew · Changes/);
+  assert.match(currentFrame(s), /Agentbrew · Differences/);
   assert.match(currentFrame(s), /DIFF /);
 
   s.input.write("\x1b");
@@ -189,6 +189,7 @@ test("an asynchronous preview prevents reentry and settles before a requested ex
   s.input.write("r\r\x1b[B\r");
   await settle();
   assert.equal(calls, 1);
+  assert.match(currentFrame(s), /read-only · \d+s/);
   s.input.write("q");
   await settle();
   assert.match(currentFrame(s), /Finishing the read-only operation before exit/);
@@ -232,6 +233,14 @@ test("non-TTY, JSON, help, and dumb-terminal fallback do not start the visual se
   assert.equal(await status, 0);
   assert.match(fallback.text(), /classification: repairable/);
   assert.doesNotMatch(fallback.text(), /\x1b\[\?1049h/);
+
+  const tiny = session(f);
+  tiny.output.rows = 4;
+  const tinyStatus = runCli([], tiny.streams);
+  tiny.input.write("\n");
+  assert.equal(await tinyStatus, 0);
+  assert.match(tiny.text(), /classification: repairable/);
+  assert.doesNotMatch(tiny.text(), /\x1b\[\?1049h/);
 });
 
 test("TUI frames fit width and height, retain the selected item, and clamp scrolling", (t) => {
@@ -259,6 +268,34 @@ test("TUI frames fit width and height, retain the selected item, and clamp scrol
   assert.ok(scrolled.lines.length <= 8);
   assert.ok(scrolled.scroll > 0);
   assert.ok(scrolled.scroll < 1000);
+
+  model.page = "health";
+  model.scroll = 0;
+  model.result = {
+    schemaVersion: 1,
+    command: "doctor",
+    status: "unhealthy",
+    target: { agentDir: "/tmp/target" },
+    changes: "none",
+    steps: [],
+    differences: [],
+    checks: Array.from({ length: 30 }, (_, index) => ({ resource: `check-${index}`, status: "pass", message: "x".repeat(60) })),
+  };
+  for (const height of [5, 6, 8, 12, 24]) {
+    const rendered = renderTuiFrame(model, style, height);
+    assert.ok(rendered.lines.length <= height, `height ${height} produced ${rendered.lines.length} lines`);
+  }
+
+  const narrow = createTerminalStyle(Object.assign(new PassThrough(), { isTTY: true, columns: 32, rows: 12 }), { NO_COLOR: "1" }, true);
+  model.busy = true;
+  model.busySince = Date.now() - 3500;
+  assert.match(stripVTControlCharacters(renderTuiFrame(model, narrow, 12).lines.join("\n")), /read-only · \d+s/);
+  model.busy = false;
+  model.busySince = undefined;
+  model.page = "overview";
+  const overview = stripVTControlCharacters(renderTuiFrame(model, narrow, 12).lines.join("\n"));
+  assert.match(overview, /\? help/);
+  assert.match(overview, /q quit/);
 });
 
 test("raw-mode startup failure restores the cursor, screen, and input", async (t) => {

@@ -101,6 +101,20 @@ test("resolved update executes host first, installs exact packages, and preserve
   assert.equal(fs.realpathSync(path.join(f.npmDir, "host-link")), fs.realpathSync(path.join(f.agentDir, "install", "releases", "1.5.0", "node_modules", HOST_PACKAGE)));
 });
 
+test("npm rewriting lock formatting or dependency order does not fail the reviewed plan", async (t) => {
+  const { f, args, metadata } = await prepare(t);
+  const result = f.run(args, { ...metadata.env, MOCK_NPM_REORDER_LOCK: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.steps.find((step) => step.id === "npm-install").status, "success");
+  const lock = readJson(path.join(f.npmDir, "package-lock.json"));
+  const expected = [HOST_PACKAGE, ...PEERS, "pi-subagents"].sort();
+  assert.deepEqual(Object.keys(lock.packages[""].dependencies).sort(), expected);
+  assert.equal(lock.packages["node_modules/pi-subagents"].version, "0.83.1");
+  const reviewed = readJson(path.join(f.stateDir, "last-package-lock.plan.json"));
+  assert.deepEqual(Object.keys(reviewed.packages[""].dependencies).sort(), expected);
+});
+
 test("host command failure and unexpected host versions block every extension", async (t) => {
   const failure = await prepare(t);
   const failed = failure.f.run(failure.args, { ...failure.metadata.env, MOCK_PI_FAIL: "1" });

@@ -34,7 +34,8 @@ export function canUseTerminalMenu(io: TerminalMenuIO): boolean {
     && io.output.isTTY === true
     && typeof io.input.setRawMode === "function"
     && (io.env ?? process.env).TERM !== "dumb"
-    && (io.output.columns || 80) >= 32;
+    && (io.output.columns || 80) >= 32
+    && (io.output.rows || 24) >= 8;
 }
 
 function visibleRange(index: number, count: number, maximum: number): { start: number; end: number } {

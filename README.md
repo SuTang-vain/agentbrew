@@ -43,7 +43,7 @@ node dist/bin/agentbrew.js --help
 Run `agentbrew` in a capable interactive terminal. It opens a foreground, full-screen workspace rather than a daemon:
 
 - **Overview** summarizes the local target, Pi/herdr, health, differences, and active sources.
-- **Health** and **Changes** reuse doctor and diff without repairing anything.
+- **Health** and **Differences** reuse doctor and diff without repairing anything.
 - **Update preview** uses the same update path with `dryRun=true`; opening it may fetch release/npm metadata for a Bundle, but never acquires the write lock or installs anything.
 - **Sources** explains explicit or registered layers. **Help** lists the explicit CLI commands for writes.
 
@@ -135,6 +135,7 @@ agentbrew source clear
 - The binding is stored as `sources.json` with mode `0600` in this target's local state directory. It contains normalized absolute paths and content hashes, not credentials or shared configuration.
 - `inspect`, `diff`, `doctor`, `update`, `resolve`, and `explain` can use the registered inputs. A one-shot explicit `--layer` takes precedence without rewriting the binding. `init`, `adopt`, and typed-plan `apply` do not load it implicitly.
 - `source list` reports current or changed content. Missing, malformed, cross-target, or unreadable registrations fail explicitly; update never silently falls back to native bulk update when a binding is damaged.
+- A damaged binding is never deleted by `source clear`; replace it with `source set --layer …`, or remove `sources.json` by hand. The file lives in the per-target state directory: `$HOME/.local/state/agentbrew/<target-key>/sources.json`, where `<target-key>` is the first 16 hex characters of the SHA-256 of the resolved `agentDir` (`--state-dir` or `AGENTBREW_STATE_DIR` overrides the root). If that path is a directory, remove it manually.
 - Registration does not grant Manage ownership, discover the current directory, read Git credentials, or fetch repositories. `source set` and `clear` share the target operation lock with update, so a changed binding invalidates an in-flight plan.
 - After `source clear`, or when no binding was ever registered, `update` retains the native compatibility path described below.
 
@@ -294,6 +295,7 @@ Exit codes:
 - Existing non-symlink host links are never replaced; writes reject escaping directory links.
 - Plan and proposal files are newly created with private permissions.
 - Authentication files are not read or included in results; common credential forms are redacted from command errors.
+- A damaged source binding blocks only the commands that read it (`inspect`, `diff`, `doctor`, `update`, `resolve`, `explain`); `init`, `adopt`, and typed-plan `apply` do not load it. See "Registered source inputs" for recovery.
 - Read-only commands do not create Agentbrew state or acquire the write lock. Native tools may maintain their own caches or telemetry.
 - Agentbrew does not silently update its own executable.
 - Plans, ownership, snapshots, and results are machine-local. Do not commit the state directory as shared configuration.
