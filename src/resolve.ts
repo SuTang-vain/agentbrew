@@ -250,8 +250,10 @@ export async function resolveConfiguration(
 ): Promise<ResolveReport> {
   const resources = selectedResources(bundle, selected);
   const currentHost = resolveHost(context);
+  const progress = context.progress ?? (() => {});
   const errors: Array<{ source: string; message: string }> = [];
   let host: HostResolution | null = null;
+  progress("resolving the Pi release channel…");
   try {
     const release = await client.getRelease();
     if (!isObject(release) || typeof release.version !== "string" || !validNpmConstraint(release.version, true)) {
@@ -279,12 +281,15 @@ export async function resolveConfiguration(
       .filter(([name]) => name.startsWith("@earendil-works/pi-")));
     if (hostManifest.integrity) host.integrity = hostManifest.integrity;
     if (update && !hostManifest.integrity) throw new Error(`registry integrity for ${HOST_PACKAGE}@${targetVersion} is missing`);
+    progress(`target host ${targetVersion} (${host.action})`);
   } catch (error) {
     errors.push({ source: "pi.host", message: redact(error instanceof Error ? error.message : String(error)) });
   }
 
   const resolved: ResourceResolution[] = [];
-  for (const resource of resources) {
+  if (resources.length > 0) progress(`resolving ${resources.length} npm resource(s)…`);
+  for (const [index, resource] of resources.entries()) {
+    progress(`resolving ${resource.id} (${index + 1}/${resources.length})…`);
     const required = bundle.required.includes(resource.id);
     const name = packageForResource(resource.id);
     const installed = installedManifest(context, name);

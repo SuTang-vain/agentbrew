@@ -12,6 +12,7 @@ export interface Context {
   selftest: boolean;
   layers: string[];
   layerOrigin: "explicit" | "registered" | "none";
+  progress?: (message: string) => void;
   env: NodeJS.ProcessEnv;
 }
 

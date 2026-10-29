@@ -149,6 +149,60 @@ test("explicit layers are valid TUI inputs and remain distinguishable from regis
   assert.equal(fs.existsSync(f.stateDir), false);
 });
 
+test("Help returns to the cached page, digits jump directly, and previews report progress", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  let healthCalls = 0;
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const status = runTui(context, s.streams, {
+    health: async () => {
+      healthCalls += 1;
+      return {
+        schemaVersion: 1,
+        command: "doctor",
+        status: "success",
+        target: { agentDir: f.agentDir },
+        changes: "none",
+        steps: [],
+        differences: [],
+        checks: [{ resource: "probe.health", status: "pass", message: `health-${healthCalls}` }],
+      };
+    },
+    update: async (scoped) => {
+      scoped.progress?.("resolving npm:probe (1/1)…");
+      return pending;
+    },
+  });
+  await settle();
+  s.input.write("\x1b[B\r");
+  await settle();
+  const health = currentFrame(s);
+  assert.match(health, /Agentbrew · Health/);
+  assert.match(health, /health-1/);
+  assert.equal(health.includes("\ntarget:"), false);
+
+  s.input.write("?");
+  await settle();
+  assert.match(currentFrame(s), /Navigation/);
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.match(currentFrame(s), /Agentbrew · Health/);
+  assert.match(currentFrame(s), /health-1/);
+  assert.equal(healthCalls, 1);
+
+  s.input.write("4");
+  await settle();
+  assert.match(currentFrame(s), /Agentbrew · Update preview/);
+  assert.match(currentFrame(s), /resolving npm:probe \(1\/1\)/);
+  release({ schemaVersion: 1, command: "update", status: "success", target: { agentDir: f.agentDir }, changes: "none", steps: [], differences: [], checks: [] });
+  await settle();
+  assert.match(currentFrame(s), /result: success; changes: none/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
 test("a damaged registered binding fails update preview closed without native fallback", async (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.stateDir, { recursive: true });
@@ -260,6 +314,7 @@ test("TUI frames fit width and height, retain the selected item, and clamp scrol
   const frame = renderTuiFrame(model, style, 12);
   assert.ok(frame.lines.length <= 12);
   assert.match(stripVTControlCharacters(frame.lines.join("\n")), /Quit/);
+  assert.match(stripVTControlCharacters(frame.lines.join("\n")), /\d+–7\/7 pages/);
   for (const line of frame.lines) assert.ok(visibleWidth(line) <= 32);
   model.page = "help";
   model.busy = false;

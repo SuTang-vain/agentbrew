@@ -33,6 +33,7 @@ export interface TuiModel {
   exitRequested: boolean;
   scroll: number;
   notice?: string;
+  returnPage?: TuiPage;
 }
 
 export interface RenderedTuiFrame {
@@ -56,10 +57,12 @@ function paintResultLine(line: string, style: TerminalStyle): string {
 
 function wrappedResult(result: CommandResult, style: TerminalStyle): string[] {
   const summary = `result: ${result.status}; changes: ${result.changes}`;
-  const details = renderResult(result, true).split("\n").filter((line) => !line.startsWith("result:"));
+  const details = renderResult(result, true)
+    .split("\n")
+    .filter((line) => !line.startsWith("result:") && !line.startsWith("target:"));
   return [summary, ...details].flatMap((line) => {
     const wrapped = style.wrap(line);
-    return wrapped.map((part) => paintResultLine(part, style));
+    return wrapped.map((part, index) => paintResultLine(index === 0 ? part : `  ${part}`, style));
   });
 }
 
@@ -93,10 +96,11 @@ function overviewSummary(model: TuiModel, style: TerminalStyle): string[] {
 const HELP_LINES = [
   "Navigation",
   "  ↑/↓     Move in the menu or scroll a result page",
+  "  1–6     Jump directly to a page",
   "  Enter   Open the selected page",
   "  r       Refresh the current page",
-  "  Esc     Return to Overview",
-  "  ?       Open this help",
+  "  Esc     Return to Overview, or to the page Help was opened from",
+  "  ?       Open this help without discarding the current page",
   "  q       Quit after any active read-only operation settles",
   "  Ctrl+C  Quit with the same terminal restoration",
   "",
@@ -136,9 +140,9 @@ function footerText(model: TuiModel, style: TerminalStyle): string {
     return fitHints([`read-only · ${elapsed}s`, "q exits when it settles"], style.width, ["q exits when it settles"]);
   }
   const hints = model.page === "overview"
-    ? ["↑/↓ move", "enter open", "r refresh", "? help", "q quit"]
-    : ["↑/↓ scroll", "r refresh", "esc back", "? help", "q quit"];
-  return fitHints(hints, style.width, model.page === "overview" ? ["r refresh", "enter open"] : ["r refresh", "esc back"]);
+    ? ["↑/↓ move", "1-6 pages", "enter open", "r refresh", "? help", "q quit"]
+    : ["↑/↓ scroll", "1-6 pages", "r refresh", "esc back", "? help", "q quit"];
+  return fitHints(hints, style.width, model.page === "overview" ? ["r refresh", "enter open", "1-6 pages"] : ["r refresh", "esc back", "1-6 pages"]);
 }
 
 export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: number): RenderedTuiFrame {
@@ -160,12 +164,16 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     const summaryCount = bodyHeight <= 1 ? 0 : Math.min(summary.length, Math.max(1, Math.floor(bodyHeight / 2)));
     body.push(...summary.slice(0, summaryCount));
     const menuSpace = bodyHeight - summaryCount;
-    const visibleCount = Math.max(0, Math.min(TUI_MENU_ITEMS.length, menuSpace));
+    const windowed = menuSpace < TUI_MENU_ITEMS.length;
+    const visibleCount = Math.max(1, Math.min(TUI_MENU_ITEMS.length, menuSpace - (windowed ? 1 : 0)));
     const { start, end } = visibleRange(model.menuIndex, TUI_MENU_ITEMS.length, visibleCount);
     for (let index = start; index < end; index++) {
       const entry = TUI_MENU_ITEMS[index]!;
       const label = `${index === model.menuIndex ? "›" : " "} ${entry.label}`;
       body.push(index === model.menuIndex ? style.title(label) : label);
+    }
+    if (body.length < bodyHeight && windowed && end > start) {
+      body.push(style.paint(`  ${start + 1}–${end}/${TUI_MENU_ITEMS.length} pages`, "muted"));
     }
     if (body.length < bodyHeight && item.description) body.push(style.paint(`  ${item.description}`, "muted"));
   } else if (model.page === "help") {

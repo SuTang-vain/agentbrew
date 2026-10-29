@@ -177,6 +177,14 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         finish(1, error);
       }
     };
+    const live: Context = {
+      ...context,
+      progress: (message: string): void => {
+        if (finished || !model.busy) return;
+        model.notice = message;
+        draw();
+      },
+    };
     const requestExit = (code: number): void => {
       if (finished) return;
       requestedExitCode = code;
@@ -187,7 +195,14 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       }
       finish(code);
     };
+    const openHelp = (): void => {
+      if (model.page !== "help") model.returnPage = model.page;
+      model.page = "help";
+      model.scroll = 0;
+      draw();
+    };
     const activate = async (page: TuiPage): Promise<void> => {
+      if (page === "help") return openHelp();
       if (finished || model.busy) return;
       model.page = page;
       model.scroll = 0;
@@ -199,17 +214,17 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       draw();
       try {
         if (page === "overview") {
-          const overview = await operations.overview(context);
+          const overview = await operations.overview(live);
           model.evaluation = overview.evaluation;
           model.sources = overview.sources;
         } else if (page === "health") {
-          model.result = await operations.health(context);
+          model.result = await operations.health(live);
         } else if (page === "changes") {
-          model.result = await operations.changes(context);
+          model.result = await operations.changes(live);
         } else if (page === "update") {
-          model.result = await operations.update(context);
+          model.result = await operations.update(live);
         } else if (page === "sources") {
-          model.result = await operations.sources(context);
+          model.result = await operations.sources(live);
         }
       } catch (error) {
         finish(1, error);
@@ -234,12 +249,29 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       }
       if (model.busy) return;
       if (key.name === "escape") {
+        if (model.page === "help" && model.returnPage) {
+          model.page = model.returnPage;
+          model.returnPage = undefined;
+          model.scroll = 0;
+          draw();
+          return;
+        }
         if (model.page !== "overview") void activate("overview");
         return;
       }
       if (text === "?" && model.page !== "help") {
-        void activate("help");
+        openHelp();
         return;
+      }
+      if (/^[1-9]$/.test(text)) {
+        const direct = Number(text);
+        if (direct <= TUI_MENU_ITEMS.length - 1) {
+          const target = TUI_MENU_ITEMS[direct - 1]!;
+          model.menuIndex = direct - 1;
+          if (target.id === "help") openHelp();
+          else if (target.id !== "quit") void activate(target.id);
+          return;
+        }
       }
       if (key.name === "r") {
         void activate(model.page);
@@ -255,6 +287,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         } else if (key.name === "return" || key.name === "enter") {
           const selected = TUI_MENU_ITEMS[model.menuIndex]!;
           if (selected.id === "quit") finish(0);
+          else if (selected.id === "help") openHelp();
           else void activate(selected.id);
         }
         return;

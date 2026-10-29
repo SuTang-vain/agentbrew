@@ -574,7 +574,7 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 
 ### M2c：常驻只读工作台（已实现）
 
-裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Changes、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。
+裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Differences、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。Help 是非破坏性覆盖层：Esc 返回原页面并复用缓存结果；数字键直达页面；窗口化菜单显示位置指示；元数据预览按请求显示进度与已用时间。
 
 ### M3：管理员 SSH 多用户交付
 

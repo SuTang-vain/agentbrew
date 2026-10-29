@@ -90,6 +90,27 @@ test("resolve selects the newest candidate compatible with the target host", asy
   assert.deepEqual(f.commands(), []);
 });
 
+test("resolution reports bounded progress messages without changing the result", async (t) => {
+  const f = fixture(t);
+  install(f);
+  const source = bundle(f, { "npm:pi-subagents": npm("^0.83.0") });
+  const meta = metadata({ release: "1.5.0", versions: defaultVersions });
+  const messages = [];
+  const report = await resolveConfiguration(
+    { ...context(f), progress: (message) => messages.push(message) },
+    source,
+    [],
+    meta.client,
+  );
+  assert.equal(report.ready, true);
+  assert.deepEqual(messages, [
+    "resolving the Pi release channel…",
+    "target host 1.5.0 (update)",
+    "resolving 1 npm resource(s)…",
+    "resolving npm:pi-subagents (1/1)…",
+  ]);
+});
+
 test("a newer target host enables a newer compatible extension with integrity evidence", async (t) => {
   const f = fixture(t);
   install(f);
