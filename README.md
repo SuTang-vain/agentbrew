@@ -153,6 +153,7 @@ agentbrew resolve \
 The resolver uses the same `https://pi.dev/api/latest-version` release channel as native Pi, then reads exact host and extension metadata from the npm registry. It selects the newest version satisfying both the Bundle constraint and all declared Pi peer constraints; if the newest candidate is incompatible, it can fall back to an older compatible version. Results include current/target versions, peer evidence, registry integrity, and `ready`/`complete` status.
 
 - Exact, `^`, and `~` Bundle constraints are supported. Peer checks also support `*`, comparison operators, whitespace AND, and `||`; unsupported ranges become unknown rather than compatible.
+- Independent npm packument requests are fetched with bounded concurrency (four at a time), so latency follows the slowest request rather than the sum. The host release and manifest stay sequential because they are data-dependent, and per-resource results keep their sorted order.
 - `fixed` and `manual` resources evaluate only the installed version and do not select an upgrade.
 - Missing peer metadata is never treated as proof of compatibility. A new required resource is blocked; an existing resource can remain with a warning. If the host changes while any existing resource is unknown, `ready=false` and subsequent updates must remain blocked.
 - `PI_OFFLINE=1` stops before any network request. Metadata requests use HTTPS, timeouts, and response-size limits; they do not read npm credentials, download package code, create state, or acquire locks.

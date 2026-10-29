@@ -242,6 +242,21 @@ function selectedResources(bundle: ResolvedBundle, selected: string[]): Resolved
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+const METADATA_CONCURRENCY = 4;
+
+async function eachLimit<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      await worker(items[index]!);
+    }
+  });
+  await Promise.all(runners);
+}
+
 export async function resolveConfiguration(
   context: Context,
   bundle: ResolvedBundle,
@@ -287,9 +302,26 @@ export async function resolveConfiguration(
   }
 
   const resolved: ResourceResolution[] = [];
-  if (resources.length > 0) progress(`resolving ${resources.length} npm resource(s)…`);
-  for (const [index, resource] of resources.entries()) {
-    progress(`resolving ${resource.id} (${index + 1}/${resources.length})…`);
+  const fetchable = host
+    ? resources.filter((resource) => (resource.declaration as NpmDeclaration).update === "compatible")
+    : [];
+  const packuments = new Map<string, unknown>();
+  const failures = new Map<string, Error>();
+  if (fetchable.length > 0) {
+    progress(`resolving ${fetchable.length} npm resource(s)…`);
+    let completed = 0;
+    await eachLimit(fetchable, METADATA_CONCURRENCY, async (resource) => {
+      progress(`resolving ${resource.id}…`);
+      try {
+        packuments.set(resource.id, await client.getPackument(packageForResource(resource.id)));
+      } catch (error) {
+        failures.set(resource.id, error instanceof Error ? error : new Error(String(error)));
+      }
+      completed += 1;
+      progress(`resolved ${completed}/${fetchable.length}…`);
+    });
+  }
+  for (const resource of resources) {
     const required = bundle.required.includes(resource.id);
     const name = packageForResource(resource.id);
     const installed = installedManifest(context, name);
@@ -303,19 +335,19 @@ export async function resolveConfiguration(
       else resolved.push(emptyResource(resource, required, null, required ? "blocked" : "unknown", installed.error ?? "current package is unavailable"));
       continue;
     }
-    try {
-      const packument = await client.getPackument(name);
-      resolved.push(resolveCompatible(resource, required, installed.value, installed.value ? null : installed.error, packument, host));
-    } catch (error) {
-      errors.push({ source: resource.id, message: redact(error instanceof Error ? error.message : String(error)) });
+    const failure = failures.get(resource.id);
+    if (failure) {
+      errors.push({ source: resource.id, message: redact(failure.message) });
       resolved.push(emptyResource(
         resource,
         required,
         installed.value?.version ?? null,
         installed.value && !required ? "unknown" : "blocked",
-        `npm metadata is unavailable: ${redact(error instanceof Error ? error.message : String(error))}`,
+        `npm metadata is unavailable: ${redact(failure.message)}`,
       ));
+      continue;
     }
+    resolved.push(resolveCompatible(resource, required, installed.value, installed.value ? null : installed.error, packuments.get(resource.id), host));
   }
 
   const hostNeedsUpdate = host?.action === "update";

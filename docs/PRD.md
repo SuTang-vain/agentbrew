@@ -696,6 +696,8 @@ agentbrew resolve \
 
 元数据客户端使用 Node 内置 fetch、HTTPS、重定向拒绝、超时和响应大小限制；测试只允许显式 loopback HTTP 或 fetch double。包名和精确版本在构造 URL 前校验，HTTP 状态和响应错误不得泄露响应秘密。
 
+目标宿主的 release 与 manifest 因数据依赖保持串行；各 compatible 资源的 packument 只依赖已确定的宿主版本，必须以有界并发（默认最多 4 个在途请求）发起，使延迟取决于最慢请求而非总和。并发不得改变评估顺序：报告中的资源和错误仍按资源 ID 排序，单个资源失败只影响该资源。
+
 ### 18.2 目标宿主与资产选择
 
 1. 校验 release 的精确 semver 和包身份。release 较新时作为目标宿主；相同或较旧时保持当前宿主，不计划降级。

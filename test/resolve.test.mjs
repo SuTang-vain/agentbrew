@@ -107,8 +107,88 @@ test("resolution reports bounded progress messages without changing the result",
     "resolving the Pi release channel…",
     "target host 1.5.0 (update)",
     "resolving 1 npm resource(s)…",
-    "resolving npm:pi-subagents (1/1)…",
+    "resolving npm:pi-subagents…",
+    "resolved 1/1…",
   ]);
+});
+
+function concurrentMetadata(names, { delayMs = 25, fail } = {}) {
+  const state = { active: 0, maxActive: 0, calls: [] };
+  return {
+    state,
+    client: {
+      getRelease: async () => ({ version: "1.4.0" }),
+      getManifest: async () => ({
+        name: HOST_PACKAGE,
+        version: "1.4.0",
+        dependencies: {
+          "@earendil-works/pi-ai": "1.4.0",
+          "@earendil-works/pi-agent-core": "1.4.0",
+          "@earendil-works/pi-tui": "1.4.0",
+        },
+        dist: { integrity: "sha512-host" },
+      }),
+      getPackument: async (name) => {
+        state.calls.push(name);
+        state.active += 1;
+        state.maxActive = Math.max(state.maxActive, state.active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (fail === name) throw new Error(`metadata for ${name} failed`);
+          return {
+            name,
+            versions: {
+              "1.0.0": {
+                name,
+                version: "1.0.0",
+                peerDependencies: { [HOST_PACKAGE]: ">=1.0.0" },
+                dist: { integrity: `sha512-${name}` },
+              },
+            },
+          };
+        } finally {
+          state.active -= 1;
+        }
+      },
+    },
+  };
+}
+
+test("independent packuments resolve with bounded concurrency and unchanged selection", async (t) => {
+  const f = fixture(t);
+  const ids = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const source = bundle(f, Object.fromEntries(ids.map((id) => [`npm:pkg-${id}`, npm("^1.0.0")])));
+  const meta = concurrentMetadata(ids);
+  const messages = [];
+  const report = await resolveConfiguration(
+    { ...context(f), progress: (message) => messages.push(message) },
+    source,
+    [],
+    meta.client,
+  );
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.resources.map((resource) => resource.id), ids.map((id) => `npm:pkg-${id}`));
+  for (const resource of report.resources) {
+    assert.equal(resource.action, "update");
+    assert.equal(resource.targetVersion, "1.0.0");
+  }
+  assert.ok(meta.state.maxActive >= 2, `maxActive was ${meta.state.maxActive}`);
+  assert.ok(meta.state.maxActive <= 4, `maxActive was ${meta.state.maxActive}`);
+  assert.equal(meta.state.calls.length, ids.length);
+  assert.equal(messages.filter((message) => message.startsWith("resolved ")).length, ids.length);
+});
+
+test("one failing packument does not cancel the other resources", async (t) => {
+  const f = fixture(t);
+  const ids = ["a", "b", "c", "d", "e", "f"];
+  const source = bundle(f, Object.fromEntries(ids.map((id) => [`npm:pkg-${id}`, npm("^1.0.0")])));
+  const meta = concurrentMetadata(ids, { fail: "pkg-c" });
+  const report = await resolveConfiguration(context(f), source, [], meta.client);
+  assert.equal(report.ready, false);
+  assert.equal(report.errors.length, 1);
+  assert.equal(report.errors[0].source, "npm:pkg-c");
+  assert.equal(report.resources.filter((resource) => resource.action === "update").length, ids.length - 1);
+  assert.equal(report.resources.find((resource) => resource.id === "npm:pkg-c").action, "blocked");
 });
 
 test("a newer target host enables a newer compatible extension with integrity evidence", async (t) => {
