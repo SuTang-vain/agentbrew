@@ -13,6 +13,7 @@ export interface Context {
   layers: string[];
   layerOrigin: "explicit" | "registered" | "none";
   progress?: (message: string) => void;
+  signal?: AbortSignal;
   env: NodeJS.ProcessEnv;
 }
 

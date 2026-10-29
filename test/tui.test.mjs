@@ -203,6 +203,57 @@ test("Help returns to the cached page, digits jump directly, and previews report
   assert.equal(await status, 0);
 });
 
+test("Esc cancels an in-flight preview and restores the previous page", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  let healthCalls = 0;
+  let updateCalls = 0;
+  const status = runTui(context, s.streams, {
+    health: async () => {
+      healthCalls += 1;
+      return {
+        schemaVersion: 1,
+        command: "doctor",
+        status: "success",
+        target: { agentDir: f.agentDir },
+        changes: "none",
+        steps: [],
+        differences: [],
+        checks: [{ resource: "probe.health", status: "pass", message: `health-${healthCalls}` }],
+      };
+    },
+    update: async (scoped) => {
+      updateCalls += 1;
+      scoped.progress?.("resolving npm:probe…");
+      await new Promise((_resolve, reject) => {
+        scoped.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+      });
+      throw new Error("unreachable");
+    },
+  });
+  await settle();
+  s.input.write("\x1b[B\r");
+  await settle();
+  assert.match(currentFrame(s), /health-1/);
+
+  s.input.write("4");
+  await settle();
+  assert.match(currentFrame(s), /resolving npm:probe/);
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await settle();
+  const frame = currentFrame(s);
+  assert.match(frame, /Agentbrew · Health/);
+  assert.match(frame, /health-1/);
+  assert.match(frame, /read-only request cancelled/);
+  assert.equal(updateCalls, 1);
+  assert.equal(healthCalls, 1);
+  assert.equal(fs.existsSync(f.stateDir), false);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
 test("a damaged registered binding fails update preview closed without native fallback", async (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.stateDir, { recursive: true });

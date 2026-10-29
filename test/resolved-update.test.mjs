@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { loadBundle } from "../dist/bundle.js";
+import { createContext } from "../dist/context.js";
+import { readOwnership } from "../dist/ownership.js";
+import { resolvedUpdateCommand } from "../dist/resolved-update.js";
 import { fixture, HOST_PACKAGE, PEERS, readJson } from "./helpers.mjs";
 import { metadataServer } from "./metadata-server.mjs";
 
@@ -113,6 +117,23 @@ test("npm rewriting lock formatting or dependency order does not fail the review
   assert.equal(lock.packages["node_modules/pi-subagents"].version, "0.83.1");
   const reviewed = readJson(path.join(f.stateDir, "last-package-lock.plan.json"));
   assert.deepEqual(Object.keys(reviewed.packages[""].dependencies).sort(), expected);
+});
+
+test("a cancelled resolved update stops before execution and writes nothing", async (t) => {
+  const { f, source, metadata } = await prepare(t);
+  const controller = new AbortController();
+  controller.abort();
+  const base = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env(metadata.env));
+  const result = await resolvedUpdateCommand(
+    { ...base, signal: controller.signal },
+    readOwnership(base),
+    loadBundle([source]),
+  );
+  assert.equal(result.status, "not-executed");
+  assert.match(result.error, /cancelled/);
+  assert.equal(f.commands().some((line) => line.startsWith("pi update") || line.startsWith("npm install") || line.startsWith("herdr integration install")), false);
+  assert.equal(fs.existsSync(path.join(f.stateDir, "last-result.json")), false);
+  assert.equal(fs.existsSync(path.join(f.stateDir, "operation.lock")), false);
 });
 
 test("host command failure and unexpected host versions block every extension", async (t) => {

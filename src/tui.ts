@@ -111,6 +111,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
     let inputBuffer = "";
     let escapeTimer: NodeJS.Timeout | undefined;
     let ticker: NodeJS.Timeout | undefined;
+    let controller: AbortController | undefined;
     let lastFrame = "";
 
     const stopTicker = (): void => {
@@ -201,9 +202,35 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.scroll = 0;
       draw();
     };
+    const restore = (previous: { page: TuiPage; result?: CommandResult; evaluation?: EnvironmentEvaluation; sources?: CommandResult; scroll: number }): void => {
+      model.page = previous.page;
+      model.result = previous.result;
+      model.evaluation = previous.evaluation;
+      model.sources = previous.sources;
+      model.scroll = previous.scroll;
+      model.busy = false;
+      model.busySince = undefined;
+      model.notice = "read-only request cancelled";
+      stopTicker();
+      if (model.exitRequested) {
+        finish(requestedExitCode);
+        return;
+      }
+      draw();
+    };
     const activate = async (page: TuiPage): Promise<void> => {
       if (page === "help") return openHelp();
       if (finished || model.busy) return;
+      const previous = {
+        page: model.page,
+        result: model.result,
+        evaluation: model.evaluation,
+        sources: model.sources,
+        scroll: model.scroll,
+      };
+      const cancellation = new AbortController();
+      controller = cancellation;
+      live.signal = cancellation.signal;
       model.page = page;
       model.scroll = 0;
       model.result = undefined;
@@ -227,9 +254,15 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
           model.result = await operations.sources(live);
         }
       } catch (error) {
+        controller = undefined;
+        live.signal = undefined;
+        if (cancellation.signal.aborted) return restore(previous);
         finish(1, error);
         return;
       }
+      controller = undefined;
+      live.signal = undefined;
+      if (cancellation.signal.aborted) return restore(previous);
       if (finished) return;
       model.busy = false;
       model.busySince = undefined;
@@ -247,7 +280,14 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         requestExit(key.ctrl ? 130 : 0);
         return;
       }
-      if (model.busy) return;
+      if (model.busy) {
+        if (key.name === "escape" && controller) {
+          const error = new Error("read-only request cancelled");
+          error.name = "AbortError";
+          controller.abort(error);
+        }
+        return;
+      }
       if (key.name === "escape") {
         if (model.page === "help" && model.returnPage) {
           model.page = model.returnPage;

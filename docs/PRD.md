@@ -574,7 +574,7 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 
 ### M2c：常驻只读工作台（已实现）
 
-裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Differences、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。Help 是非破坏性覆盖层：Esc 返回原页面并复用缓存结果；数字键直达页面；窗口化菜单显示位置指示；元数据预览按请求显示进度与已用时间。
+裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Differences、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。Help 是非破坏性覆盖层：Esc 返回原页面并复用缓存结果；数字键直达页面；窗口化菜单显示位置指示；元数据预览按请求显示进度与已用时间；Esc 可中止在途预览并恢复原页面。
 
 ### M3：管理员 SSH 多用户交付
 
@@ -697,6 +697,8 @@ agentbrew resolve \
 元数据客户端使用 Node 内置 fetch、HTTPS、重定向拒绝、超时和响应大小限制；测试只允许显式 loopback HTTP 或 fetch double。包名和精确版本在构造 URL 前校验，HTTP 状态和响应错误不得泄露响应秘密。
 
 目标宿主的 release 与 manifest 因数据依赖保持串行；各 compatible 资源的 packument 只依赖已确定的宿主版本，必须以有界并发（默认最多 4 个在途请求）发起，使延迟取决于最慢请求而非总和。并发不得改变评估顺序：报告中的资源和错误仍按资源 ID 排序，单个资源失败只影响该资源。
+
+调用方可通过 `AbortSignal` 取消在途请求。取消与超时必须可区分，且取消不得写入 state、获取锁或触发任何受管步骤；交互式预演应在取消后恢复原视图并明确提示未执行。
 
 ### 18.2 目标宿主与资产选择
 

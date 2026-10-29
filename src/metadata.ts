@@ -10,6 +10,7 @@ export interface MetadataClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxBytes?: number;
+  signal?: AbortSignal;
 }
 
 export interface MetadataClient {
@@ -71,10 +72,24 @@ export function createMetadataClient(options: MetadataClientOptions = {}): Metad
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxBytes ?? 12 * 1024 * 1024;
+  const callerSignal = options.signal;
 
   const getJson = async (url: URL): Promise<unknown> => {
+    const display = `${url.origin}${url.pathname}`;
+    if (callerSignal?.aborted) throw new Error(`metadata request failed for ${display}: metadata request cancelled`);
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
+    let rejectCancelled: ((reason: unknown) => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      rejectCancelled = reject;
+    });
+    const onCancel = (): void => {
+      const error = new Error("metadata request cancelled");
+      error.name = "AbortError";
+      controller.abort(error);
+      rejectCancelled?.(error);
+    };
+    callerSignal?.addEventListener("abort", onCancel, { once: true });
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         const error = new Error(`metadata request timeout after ${timeoutMs} ms`);
@@ -100,12 +115,13 @@ export function createMetadataClient(options: MetadataClientOptions = {}): Metad
           }
         })(),
         timeout,
+        cancelled,
       ]);
     } catch (error) {
-      const display = `${url.origin}${url.pathname}`;
       throw new Error(`metadata request failed for ${display}: ${redact(error instanceof Error ? error.message : String(error))}`);
     } finally {
       if (timer) clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", onCancel);
     }
   };
 

@@ -57,6 +57,30 @@ test("metadata enforces byte limits and timeouts", async () => {
   await assert.rejects(stalledBody.getRelease(), /TimeoutError|timeout/i);
 });
 
+test("a caller abort cancels in-flight requests without waiting for the timeout", async () => {
+  const controller = new AbortController();
+  const client = createMetadataClient({
+    signal: controller.signal,
+    timeoutMs: 5_000,
+    fetchImpl: (_input, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason));
+    }),
+  });
+  const pending = client.getRelease();
+  controller.abort(new Error("user cancelled"));
+  await assert.rejects(pending, /cancelled/i);
+
+  const early = new AbortController();
+  early.abort();
+  let called = false;
+  const skipped = createMetadataClient({
+    signal: early.signal,
+    fetchImpl: async () => { called = true; return Response.json({}); },
+  });
+  await assert.rejects(skipped.getRelease(), /cancelled/i);
+  assert.equal(called, false);
+});
+
 test("package and exact-version inputs are validated before network access", async () => {
   let called = false;
   const client = createMetadataClient({ fetchImpl: async () => { called = true; return Response.json({}); } });

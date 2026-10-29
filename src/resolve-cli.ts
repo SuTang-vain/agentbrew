@@ -54,6 +54,7 @@ export async function resolveCommand(context: Context, selected: string[]): Prom
     const client = createMetadataClient({
       releaseUrl: context.env.AGENTBREW_PI_RELEASE_URL,
       registryUrl: context.env.AGENTBREW_NPM_REGISTRY_URL,
+      signal: context.signal,
     });
     const report = await resolveConfiguration(context, bundle, selected, client);
     result.data = report;

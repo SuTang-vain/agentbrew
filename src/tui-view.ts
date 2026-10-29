@@ -83,7 +83,7 @@ function overviewSummary(model: TuiModel, style: TerminalStyle): string[] {
   const classificationTone = assessment.classification === "healthy" ? "success"
     : assessment.classification === "repairable" ? "warning"
       : assessment.classification === "empty" ? "accent" : "error";
-  return [
+  const summary = [
     `${style.paint("Status      ", "muted")}${style.paint(assessment.classification, classificationTone)}`,
     `${style.paint("Pi          ", "muted")}${assessment.host ? `${assessment.host.version} · ${assessment.host.source}` : "no usable host"}`,
     `${style.paint("herdr       ", "muted")}${herdr.available ? `${herdr.version ?? "available"} · integration ${herdr.integration}` : "unavailable"}`,
@@ -91,6 +91,8 @@ function overviewSummary(model: TuiModel, style: TerminalStyle): string[] {
     `${style.paint("Sources     ", "muted")}${sourceText}${model.sources?.error ? ` · ${model.sources.error}` : ""}`,
     `${style.paint("Safety      ", "muted")}${style.paint("Read-only · no state, lock, update, or selftest", "accent")}`,
   ];
+  if (model.notice) summary.unshift(style.paint(model.notice, "warning"));
+  return summary;
 }
 
 const HELP_LINES = [
@@ -182,6 +184,7 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     body = [style.paint(model.notice ?? "Loading read-only result…", "muted")];
   } else {
     body = wrappedResult(model.result, style);
+    if (!model.busy && model.notice) body = [style.paint(model.notice, "warning"), ...body];
   }
 
   if (model.page !== "overview") {

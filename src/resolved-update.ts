@@ -193,8 +193,10 @@ export async function resolvedUpdateCommand(
     const client = createMetadataClient({
       releaseUrl: context.env.AGENTBREW_PI_RELEASE_URL,
       registryUrl: context.env.AGENTBREW_NPM_REGISTRY_URL,
+      signal: context.signal,
     });
     report = await resolveConfiguration(context, bundle, [], client);
+    if (context.signal?.aborted) throw new Error("resolved Bundle update was cancelled before execution");
   } catch (error) {
     return notExecuted(context, error instanceof Error ? error.message : String(error));
   }
