@@ -3,6 +3,8 @@ import { bundleDifferences, bundleHealth, bundleSummary, loadBundle, type Resolv
 import { isManaged, readOwnership, type OwnershipState } from "./ownership.js";
 import { redact } from "./process.js";
 import { resolvedUpdateCommand } from "./resolved-update.js";
+import { refreshRegisteredSources } from "./source-cli.js";
+import { registrationLayers } from "./sources.js";
 import { sourceRegistrationFingerprint } from "./source-state.js";
 import { withOperationLock, writeStateJson } from "./state.js";
 import {
@@ -70,7 +72,7 @@ export function inspectCommand(context: Context): CommandResult {
   try {
     const pi = inspectPi(context);
     const ownership = readOwnership(context);
-    const bundle = loadBundle(context.layers);
+    const bundle = loadBundle(context.layers, context);
     result.data = { pi, ownership, bundle: bundleSummary(bundle) };
     try {
       result.data = { pi, herdr: inspectHerdr(context), ownership, bundle: bundleSummary(bundle) };
@@ -86,7 +88,7 @@ export function inspectCommand(context: Context): CommandResult {
 export function diffCommand(context: Context): CommandResult {
   const result = baseResult(context, "diff");
   try {
-    const bundle = loadBundle(context.layers);
+    const bundle = loadBundle(context.layers, context);
     result.differences = [...diffPi(context), ...diffHerdr(context), ...(bundle ? bundleDifferences(context, bundle) : [])];
     result.data = { count: result.differences.length, bundle: bundleSummary(bundle) };
   } catch (error) {
@@ -99,7 +101,7 @@ export function doctorCommand(context: Context): CommandResult {
   const result = baseResult(context, "doctor");
   try {
     const ownership = readOwnership(context);
-    const bundle = loadBundle(context.layers);
+    const bundle = loadBundle(context.layers, context);
     const herdr = inspectHerdr(context);
     result.checks = [...doctorPi(context), ...doctorHerdrInspection(herdr, integrationManaged(ownership))];
     if (bundle) result.checks.push(...bundleHealth(context, bundle, ownership?.resources ?? {}, herdr));
@@ -157,11 +159,22 @@ function dryRunUpdate(context: Context, ownership: OwnershipState | null, bundle
 }
 
 export async function updateCommand(context: Context): Promise<CommandResult> {
+  if (!context.dryRun && context.layerOrigin === "registered") {
+    try {
+      const refreshed = refreshRegisteredSources(context);
+      if (refreshed) context.layers = registrationLayers(refreshed);
+    } catch (error) {
+      const result = baseResult(context, "update");
+      result.status = "not-executed";
+      result.error = redact(error instanceof Error ? error.message : String(error));
+      return result;
+    }
+  }
   let ownership: OwnershipState | null;
   let bundle: ResolvedBundle | null;
   try {
     ownership = readOwnership(context);
-    bundle = loadBundle(context.layers);
+    bundle = loadBundle(context.layers, context);
     const result = baseResult(context, "update");
     result.data = { bundle: bundleSummary(bundle) };
     if (bundle && !ownership) {

@@ -1,11 +1,11 @@
 # Agentbrew 产品需求文档
 
-- 文档状态：Draft v0.11
+- 文档状态：Draft v0.12
 - 文档目的：定义产品方向、首版需求、执行语义与验收边界
 - 适用阶段：M1a–M3 的设计、开发与评审
 - 实现语言：TypeScript + Node.js
-- 实现状态：M1a、M1b、M2a、M2b-0、M2b-1 及 M2c 已实现；M2b-2 及后续里程碑仍为设计目标
-- 尚未冻结：Bundle Release schema、Provider 通用接口字段；M2a 本地 layer schema v1 与 source registration schema v1 已冻结
+- 实现状态：M1a、M1b、M2a、M2b-0、M2b-1、M2b-2 及 M2c 已实现；后续里程碑仍为设计目标
+- 尚未冻结：Provider 通用接口字段；M2a 本地 layer schema v1、Bundle Release schema v1、source registration schema v1/v2 已冻结
 
 本文使用“必须”“应”“可”三个要求级别：“必须”表示验收阻塞项，“应”表示无充分理由不得偏离的要求，“可”表示按场景启用的能力。
 
@@ -577,7 +577,7 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 - **M2a 已实现**：本地公共/团队/个人/机器层、命名资源完整覆盖、删除与策略校验、漂移解释、选择性 Bundle plan/apply、结构化收养提案，以及 fixed/manual 原生更新保护。
 - **M2b-0 已实现**：Pi 原生 release 通道、npm 逐版本 peer/integrity 元数据、目标宿主与最新兼容资产只读解析，以及 macOS/Linux 结果验证。
 - **M2b-1 已实现**：显式或注册 Bundle 复用同一不可变解析，完成宿主先行、精确扩展安装、锁内复核、状态记录和最终 doctor；每 target 来源注册及日常命令入口已实现。
-- **M2b-2 待实现**：固定 Release、Pi 宿主等剩余制品的端到端验证、健康快照发布、团队例外和远程来源刷新。
+- **M2b-2 已实现**：固定 Release、Pi managed installer 制品绑定、健康证据发布、团队例外和 Git 来源不可变缓存与刷新；执行合同见第 21 节。
 
 ### M2c：常驻交互工作台（默认只读，已实现）
 
@@ -690,7 +690,7 @@ agentbrew apply --plan ./bundle-plan.json
 
 在 M2a 中，存在 Bundle 声明漂移时，普通 `update` 停止并指向选择性计划。fixed/manual 包已经安装时，由于 `pi update --all` 无法排除它们，M2a 返回 `not-executed`，不得先批量升级再声称策略成立。compatible 声明一致且本机 ownership 允许时，保留原生更新并在结束后复查健康。M2b-1 的 Bundle 执行路径已由第 19 节替代这一限制。
 
-M2a 的 `fixed` 是本机严格声明策略，不是团队固定 Release；来源文件哈希用于本机计划复核，不替代上游制品完整性或签名。远程 Git 刷新、Release 发布、通用 herdr 插件安装和 herdr 集成删除仍未实现，不得以成功输出推断。
+M2a 的 `fixed` 是本机严格声明策略，不是团队固定 Release；来源文件哈希用于本机计划复核，不替代上游制品完整性或签名。远程 Git 刷新、Release 发布和 Pi 宿主制品绑定按第 21 节实现；通用 herdr 插件安装、herdr 集成删除、签名和可恢复格式仍未实现，不得以成功输出推断。
 
 ## 18. M2b-0 真实元数据解析契约
 
@@ -770,14 +770,14 @@ agentbrew update --layer public=./public.json
 4. 将复核后的 lock 写入目标 npm 目录，再运行 `npm install --ignore-scripts --legacy-peer-deps`。安装后要求共享 manifest 逐字不变、实际 lock 与计划的 JSON 结构相等；允许 npm 仅规范化对象键顺序，但版本、integrity、路径或依赖内容变化必须失败。逐项核对所有直接包实际 manifest、精确版本、lock 条目和 host links；任何实质变化或版本偏移均停止 herdr/selftest 等依赖步骤并记录部分完成。
 5. 目标已经满足精确版本且无需修复宿主链接时，不运行 npm 安装，只验证保留版本和链接。暂存目录在成功或失败后均清理，操作锁和 `last-result.json` 语义不变。
 
-不得退回逐包 `npm install --no-save`：真实 npm 实验表明，它可能提升未指定的直接依赖并留下过期 lockfile。当前方案利用 npm 对 lock integrity 的校验验证外部 registry 制品；Pi 宿主制品的完整端到端校验、固定 Release 的跨机发布语义、签名和可恢复格式仍属于 M2b-2，不能由本机 lock 计划替代宣称。
+不得退回逐包 `npm install --no-save`：真实 npm 实验表明，它可能提升未指定的直接依赖并留下过期 lockfile。当前方案利用 npm 对 lock integrity 的校验验证外部 registry 制品；Pi 宿主制品绑定和固定 Release 的跨机语义按第 21 节实现，签名和可恢复格式不属于当前保证。
 
 ### 19.5 保留、验证与未完成入口
 
 - fixed/manual 只评估并保留兼容的当前版本，不再因为不能使用原生批量更新而一律拒绝。宿主变化时其 peer unknown 仍阻塞宿主。
 - 宿主不变时，已有 unknown 资源可以保持并显示跳过，但未完成的升级使整体结果为 partial，不得聚合为 success。
 - 前置步骤成功后才允许重建受管 herdr 集成、运行显式 selftest 和执行最终 doctor。runtime load 未显式验证时继续标为 unknown。
-- 远程 Git 刷新、固定 Release、Pi 宿主等完整制品校验、restore、SSH、通用 herdr 插件和 skills/MCP Provider 不在本执行闭环内；日常命令的注册来源入口按第 20 节实现。
+- 远程 Git 刷新、固定 Release 和 Pi 宿主制品绑定按第 21 节纳入执行闭环；restore、SSH、通用 herdr 插件和 skills/MCP Provider 不在本执行闭环内。
 
 ## 20. M2b-1 来源注册与日常命令契约
 
@@ -828,3 +828,101 @@ agentbrew source clear
 - 原生和 resolved update 均把 `sources.json` 原始内容指纹纳入锁前前提，并在 operation lock 内重新计算。绑定被替换、清除、改写或变为不可读时，旧计划必须停止，即使旧 layer 文件本身没有变化。
 - `source set` 在锁内重新校验本次 layer，防止等待锁期间以已变化内容注册；`source clear` 在锁内复核绑定身份与指纹，防止删除新绑定。
 - 显式 `--layer` 的单次执行不依赖注册指纹；typed plan 的 sourceHash 和复核规则独立于注册。注册变化不得提升 ownership 或授权任意原生更新。
+
+## 21. M2b-2 Release、制品、健康发布与远程来源执行契约
+
+### 21.1 Bundle Release schema v1
+
+Release 是 team 层的一种输入，仍通过 `--layer team=<file>` 使用，不改变 public < team < personal < machine 的优先级和普通 `agentbrew-layer` schema v1。
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "agentbrew-release",
+  "layer": "team",
+  "release": "team-2026-10",
+  "host": { "compatible": ">=1.4.0 <2.0.0" },
+  "resources": {
+    "npm:pi-subagents": {
+      "source": { "type": "npm", "spec": "0.84.0", "integrity": "sha512-<base64-digest>" },
+      "update": "fixed"
+    }
+  },
+  "required": ["npm:pi-subagents"],
+  "forbidden": [],
+  "verification": { "runtimeLoad": "unknown" },
+  "exceptions": [
+    {
+      "resource": "npm:pi-subagents",
+      "users": ["alice"],
+      "machines": ["mac-dev"],
+      "allow": "override",
+      "expiresAt": "2027-01-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+- `release` 必须是受限字符的安全标识。`host.compatible` 可省略；存在时必须为受支持的非精确范围，禁止传递宿主精确版本。
+- Release npm 资源可以使用 compatible/manual；Release 固定项必须使用精确 spec、fixed 和 sha512 integrity。普通 layer 的 fixed/manual 不改变既有本地保留语义，也不要求 integrity。
+- Release pin 复用统一 `resolveConfiguration`：读取精确 registry manifest，验证包身份、Pi peer 和 integrity。当前版本不同或缺失时计划精确安装，相同则保留；不兼容或证据不符必须 blocked，不得选择其他版本。
+- `host.compatible` 存在时，当前宿主在范围内而 release channel 新版本超出范围则保持当前；当前宿主不在范围内时，只有 release channel 能提供范围内更新才允许宿主先行，否则阻塞且不降级。
+- `verification.runtimeLoad` 只能是 `unknown` 或 `passed`，分别表示静态健康证据和显式 selftest 已通过；它不构成第三方代码安全证明。
+
+团队例外只允许对指定 team-required 且已声明资源进行完整声明覆盖：
+
+- `users` 或 `machines` 至少提供一个；同一字段内 OR，两类同时存在时 AND。`allow` 只能为 `override`。
+- 例外通过本次显式 `--user`、`--machine` 匹配；过期、主体不匹配或缺少主体时失效。
+- 高优先级层仍必须显式 `override`。例外不允许删除必需项、绕过 forbidden、授予本机 ownership 或隐式选择其他版本。
+- `explain` 输出 applied、expired 或 subject-mismatch 状态，不把主体身份写入 Release。
+
+### 21.2 Pi managed installer 制品绑定
+
+真实 resolved update 需要升级 managed Pi 宿主时，必须在扩展和 herdr 步骤前完成以下验证：
+
+1. 读取目标版本的 installer `package.json` 和 `package-lock.json`，验证 installer 名称、版本、宿主精确依赖、lockfileVersion 3 和 root 声明。
+2. 验证所有 registry 条目的精确版本、resolved URL 和 integrity。对安装器 lock 中缺少 integrity 的内部 `@earendil-works/pi-*` 包，读取对应精确 registry manifest，要求 tarball URL 一致并补入 sha512 integrity；其他缺失或无效 integrity 的制品必须失败关闭。
+3. 将受审文件哈希及内部包证据写入本机 `last-pi-install-plan.json`。该证据表示制品绑定，不表示签名、证明来源可信度或运行时安全。
+4. 通过随机 loopback 端口向本次 `pi update --self` 子进程提供完全相同的受审文件，仅覆盖子进程 `PI_INSTALLER_API_BASE`，使原生 `npm ci --ignore-scripts` 按受审 integrity 校验实际下载制品。服务在成功或失败后均关闭，operation lock 持续覆盖异步更新、后续步骤和 doctor。
+5. 如果目标 release 已存在且无法通过本次受审安装建立证据，必须失败关闭并给出人工检查指引，不得自动删除、重命名或直接激活缓存 release。
+
+dry-run 不读取或写入安装计划、不启动安装器服务、不获取锁。制品准备、版本不符或原生更新失败时，不得继续扩展安装或 herdr 集成。
+
+### 21.3 从健康证据发布 Release
+
+```bash
+agentbrew release create \
+  --layer team=./team.json \
+  --output ./team-release.json \
+  --host-range ">=1.4.0 <2.0.0" \
+  --selftest
+```
+
+- 发布只接受一个显式普通 team layer；不得从注册、personal、machine 或已有 Release 输入隐式导出，避免泄露私有来源和覆盖项。
+- 必须存在该 target 上同一 team-only 输入的成功 resolved update。`last-resolution.json`、`last-result.json`、来源哈希、目标、当前宿主、实际安装包和 lock 必须相互一致，解析必须 ready 且 complete。
+- 发布前再次运行 doctor。未传 `--selftest` 时只能发布 `runtimeLoad: "unknown"` 的静态证据；显式 selftest 通过后才能写 `passed`。健康失败、证据过期或版本偏移不得输出 Release。
+- 输出只包含 team 资源的实际精确版本和 registry integrity，转化为 fixed pin；剥离宿主精确版本、host.dir、agentDir、指纹、个人来源和机器状态。`--host-range` 省略时不生成宿主范围。
+- 输出必须排他新建且权限为 `0600`，不得覆盖文件，不修改共享输入或受管资源。
+
+### 21.4 Git 来源注册与刷新
+
+```bash
+agentbrew source set --git team=https://github.com/example/config.git#layers/team.json
+agentbrew source refresh
+agentbrew update --dry-run
+agentbrew update
+```
+
+- `--git` 支持 HTTPS、SSH 和显式绝对本地仓库路径，格式为 `layer=repository#relative/path`。首版跟踪远端 HEAD 并记录完整 commit；HTTPS 凭据、相对仓库路径、仓库内绝对路径、路径穿越和非 blob 输入必须拒绝。
+- source registration schema v2 在 v1 layer 条目上增加可选 `git: { url, path, ref: "HEAD", commit }`，v1 仍可读取。schema v2 的 Git 条目必须具有完整 40 位小写 commit。
+- 每个 Git layer 缓存为该 target 私有 state 下的 `<layer>-<commit>.json`，权限 `0600`。按 commit 版本化缓存保证刷新失败时旧绑定仍指向旧完整内容；成功验证完整 Bundle 后才原子替换绑定。
+- `source refresh` 只修改本机缓存与绑定，不修改受管资源。真实 `update` 在统一 `updateCommand` 内先刷新注册 Git 来源，CLI 和 TUI 行为一致；dry-run 只使用已注册 commit，并在结构化结果中提示 `agentbrew source refresh`，不写 state 或获取锁。
+- 显式 layer 永远不隐式刷新。`inspect/diff/doctor/resolve/source list` 不自动刷新；`PI_OFFLINE=1` 在 Git 网络访问前停止。刷新失败不得回退原生批量更新或把旧缓存描述为刷新成功。
+- Git 凭据只由目标用户自己的 Git 配置提供。禁止共享跨用户缓存、集中收集私有 layer 内容或在日志中输出凭据。
+
+### 21.5 多目标与用户隔离边界
+
+- M2b-2 的本地多 target 测试只能证明默认 HOME、agentDir、state、缓存和锁可以隔离，不能证明已经完成 SSH 交付或 Unix 人员安全边界。
+- 默认 state 按 agentDir 派生；显式让多个 target 共用 `--state-dir` 会共享 lock、source 和 result 文件，多用户部署必须禁止。人员隔离必须使用独立 Unix 用户、HOME、agentDir、stateDir 和私有凭据。
+- 单端管理多端在架构上采用控制端逐用户 SSH 调用目标 Agentbrew，各目标独立读取、解析、加锁、执行和 doctor；不得下发跨用户复用的解析计划或集中读取私有配置。
+- M3 远程更新必须要求 resolved + managed Pi，禁止原生批量更新和共享可写宿主。selftest、代码信任、权限提升和远程批量执行分别授权，高权限切换不能声称阻止 root 读取用户文件。

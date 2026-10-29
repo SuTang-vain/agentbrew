@@ -3,10 +3,12 @@ import { redact } from "./process.js";
 
 export const PI_RELEASE_URL = "https://pi.dev/api/latest-version";
 export const NPM_REGISTRY_URL = "https://registry.npmjs.org";
+export const PI_INSTALLER_URL = "https://pi.dev/api/installer/releases";
 
 export interface MetadataClientOptions {
   releaseUrl?: string;
   registryUrl?: string;
+  installerUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxBytes?: number;
@@ -17,6 +19,8 @@ export interface MetadataClient {
   getRelease(): Promise<unknown>;
   getPackument(name: string): Promise<unknown>;
   getManifest(name: string, version: string): Promise<unknown>;
+  getInstallerManifest(version: string): Promise<unknown>;
+  getInstallerLock(version: string): Promise<unknown>;
 }
 
 function endpoint(value: string): URL {
@@ -69,6 +73,7 @@ async function responseText(response: Response, maximum: number): Promise<string
 export function createMetadataClient(options: MetadataClientOptions = {}): MetadataClient {
   const releaseUrl = endpoint(options.releaseUrl ?? PI_RELEASE_URL);
   const registryUrl = endpoint(options.registryUrl ?? NPM_REGISTRY_URL);
+  const installerUrl = endpoint(options.installerUrl ?? PI_INSTALLER_URL);
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const maxBytes = options.maxBytes ?? 12 * 1024 * 1024;
@@ -125,8 +130,16 @@ export function createMetadataClient(options: MetadataClientOptions = {}): Metad
     }
   };
 
+  const installerArtifact = (version: string, file: "package.json" | "package-lock.json"): Promise<unknown> => {
+    if (!validNpmConstraint(version, true)) throw new Error(`invalid exact Pi installer version: ${version}`);
+    const base = `${installerUrl.origin}${installerUrl.pathname.replace(/\/$/, "")}`;
+    return getJson(new URL(`${base}/${encodeURIComponent(version)}/${file}`));
+  };
+
   return {
     getRelease: () => getJson(releaseUrl),
+    getInstallerManifest: (version) => installerArtifact(version, "package.json"),
+    getInstallerLock: (version) => installerArtifact(version, "package-lock.json"),
     getPackument: (name) => {
       const valid = packageName(name);
       const url = new URL(`${registryUrl.origin}${registryUrl.pathname.replace(/\/$/, "")}/${encodeURIComponent(valid)}`);

@@ -20,17 +20,27 @@ export function withOperationLock<T>(context: Context, operation: () => T): T {
     throw error;
   }
 
-  try {
-    fs.writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`);
-    return operation();
-  } finally {
+  const cleanup = (): void => {
     fs.closeSync(descriptor);
     try {
       fs.unlinkSync(file);
     } catch {
       // The next run will stop rather than risk concurrent writes.
     }
+  };
+  let result: T;
+  try {
+    fs.writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`);
+    result = operation();
+  } catch (error) {
+    cleanup();
+    throw error;
   }
+  if (result && (typeof result === "object" || typeof result === "function") && typeof (result as any).then === "function") {
+    return Promise.resolve(result).finally(cleanup) as unknown as T;
+  }
+  cleanup();
+  return result;
 }
 
 export function writeStateJson(context: Context, name: string, value: unknown): void {

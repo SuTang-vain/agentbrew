@@ -30,9 +30,28 @@ export function fixture(t, options = {}) {
   const bin = path.join(root, "bin");
   const log = path.join(root, "commands.log");
   const herdrStatus = path.join(root, "herdr-status");
+  const mockInstallHost = path.join(root, "mock-install-host.cjs");
   fs.mkdirSync(npmDir, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(herdrStatus, "current");
+  fs.writeFileSync(mockInstallHost, `
+    const fs = require("fs"), path = require("path");
+    const version = process.env.MOCK_NEXT_VERSION;
+    const hostDependencies = process.env.MOCK_HOST_DEPENDENCIES
+      ? JSON.parse(process.env.MOCK_HOST_DEPENDENCIES)
+      : Object.fromEntries(${JSON.stringify(PEERS)}.map((peer) => [peer, version]));
+    const names = [${JSON.stringify(HOST_PACKAGE)}, ...Object.keys(hostDependencies)];
+    for (const name of names) {
+      const dir = path.join(process.env.PI_AGENT_DIR, "install", "releases", version, "node_modules", name);
+      const file = path.join(dir, "package.json");
+      if (fs.existsSync(file)) continue;
+      fs.mkdirSync(dir, { recursive: true });
+      const manifest = name === ${JSON.stringify(HOST_PACKAGE)}
+        ? { name, version, dependencies: hostDependencies }
+        : { name, version };
+      fs.writeFileSync(file, JSON.stringify(manifest));
+    }
+  `);
 
   const dependencies = Object.fromEntries([
     ...PEERS.map((name) => [name, "1.4.0"]),
@@ -70,6 +89,7 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 if [ "$1" = "update" ] && { [ "$2" = "--all" ] || [ "$2" = "--self" ]; }; then
+  node "$MOCK_INSTALL_HOST" || exit $?
   printf '%s\\n' "$MOCK_NEXT_VERSION" > "$PI_AGENT_DIR/install/current-version"
 fi
 `);
@@ -90,7 +110,7 @@ if [ "$1" = "install" ]; then
       const packages = { "": { name: pkg.name, dependencies: pkg.dependencies } };
       for (const name of externalNames) {
         const version = pkg.dependencies[name];
-        const integrity = process.env.MOCK_NPM_WRONG_INTEGRITY === "1" ? "sha512-wrong" : "sha512-" + version;
+        const integrity = process.env.MOCK_NPM_WRONG_INTEGRITY === "1" ? "sha512-wrong" : process.env.MOCK_NPM_INTEGRITY || "sha512-" + version;
         packages["node_modules/" + name] = { version, resolved: "https://registry.npmjs.org/" + name + "/-/" + version + ".tgz", integrity };
       }
       fs.writeFileSync(path.join(npmDir, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages }, null, 2) + "\\n");
@@ -190,6 +210,7 @@ exit 2
       AGENTBREW_STATE_DIR: stateDir,
       MOCK_LOG: log,
       MOCK_NEXT_VERSION: "1.5.0",
+      MOCK_INSTALL_HOST: mockInstallHost,
       MOCK_HERDR_STATUS_FILE: herdrStatus,
       ...extraEnv,
     };

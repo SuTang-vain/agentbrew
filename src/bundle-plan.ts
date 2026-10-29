@@ -187,7 +187,7 @@ export function writeBundlePlan(file: string, plan: BundlePlan): string {
 
 export function revalidateBundlePlan(context: Context, plan: BundlePlan): ResolvedBundle {
   if (path.resolve(plan.target.agentDir) !== context.agentDir) throw new Error("Bundle plan target does not match the confirmed target");
-  const bundle = loadBundle(layerArguments(plan));
+  const bundle = loadBundle(layerArguments(plan), context);
   if (!bundle || bundle.inputHash !== plan.sourceHash) throw new Error("Bundle sources changed after planning; review and create a new plan");
   if (JSON.stringify(bundle.sources) !== JSON.stringify(plan.layers)) throw new Error("Bundle plan layer identities or hashes were modified");
   const current = createBundlePlan(context, bundle, plan.resources);
@@ -213,7 +213,7 @@ export function bundlePlanCommand(
     if (!context.layers.length) throw new Error("Bundle planning requires at least one explicit --layer");
     if (result.status !== "success") throw new Error(result.error ?? "cannot plan from an invalid target");
     if (mode !== "manage") throw new Error("Bundle planning requires explicit --mode manage; shared declarations do not grant local ownership");
-    const bundle = loadBundle(context.layers)!;
+    const bundle = loadBundle(context.layers, context)!;
     const plan = createBundlePlan(context, bundle, selected);
     const destination = writeBundlePlan(planOut, plan);
     result.status = "not-executed";

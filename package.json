@@ -16,7 +16,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/bin/agentbrew.js",
     "sandbox": "npm run build && bash scripts/sandbox.sh",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:e2e": "npm run build && AGENTBREW_TEST_NETWORK=1 node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=22"

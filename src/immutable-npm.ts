@@ -127,7 +127,7 @@ export function installLockedNpmResources(context: Context, resources: LockedNpm
       kind: "agentbrew-npm-lock-plan",
       resources: resources.map(({ id, name, version, integrity }) => ({ id, name, version, ...(integrity ? { integrity } : {}) })),
       packageLockSha256: lockHash,
-      artifactVerification: "npm uses lock integrity for registry artifact retrieval; Agentbrew does not independently hash installed trees or verify the Pi host artifact",
+      artifactVerification: "npm uses lock integrity for registry artifact retrieval; Agentbrew does not independently hash installed trees, and Pi host artifacts are verified separately through the reviewed installer lock",
     });
     writeStateJson(context, "last-package-lock.plan.json", lock);
 

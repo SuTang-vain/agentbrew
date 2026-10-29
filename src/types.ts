@@ -1,6 +1,6 @@
 export const RESULT_SCHEMA_VERSION = 1;
 
-export type CommandName = "inspect" | "diff" | "doctor" | "update" | "init" | "apply" | "explain" | "adopt" | "resolve" | "source";
+export type CommandName = "inspect" | "diff" | "doctor" | "update" | "init" | "apply" | "explain" | "adopt" | "resolve" | "source" | "release";
 export type Ownership = "observe" | "adopt" | "manage" | "generate";
 export type ChangeState = "none" | "observed" | "unknown";
 export type OverallStatus = "success" | "partial" | "unhealthy" | "failed" | "cancelled" | "not-executed";
@@ -94,6 +94,8 @@ export interface ContextOptions {
   dryRun?: boolean;
   selftest?: boolean;
   layers?: string[];
+  user?: string;
+  machine?: string;
 }
 
 export function combineChanges(steps: StepResult[]): ChangeState {

@@ -10,6 +10,7 @@ export function renderResult(result: CommandResult, verbose: boolean, style?: Te
     if (data.state && data.state !== "none") lines.push(`source state: ${data.state}`);
     for (const layer of data.registration?.layers ?? data.layers ?? []) {
       lines.push(`SOURCE ${layer.layer} ${layer.file}`);
+      if (layer.git) lines.push(`  git ${layer.git.url}#${layer.git.path} (${layer.git.ref} ${layer.git.commit})`);
     }
   }
   if (result.command === "inspect" && data) {
@@ -30,7 +31,12 @@ export function renderResult(result: CommandResult, verbose: boolean, style?: Te
     if (assessment.issues?.length) lines.push(...assessment.issues.map((issue: string) => `issue: ${issue}`));
   }
   if (data?.planOut) lines.push(`plan: ${data.planOut}`);
-  if (data?.output) lines.push(`proposal: ${data.output} (not an active configuration layer)`);
+  if (data?.output) lines.push(result.command === "release"
+    ? `release: ${data.output} (new file; review before use)`
+    : `proposal: ${data.output} (not an active configuration layer)`);
+  if (data?.runtimeLoad) lines.push(`runtime load: ${data.runtimeLoad}`);
+  if (data?.sourceRefresh) lines.push(`source refresh: ${data.sourceRefresh.state}; run ${data.sourceRefresh.command} to advance registered Git sources`);
+  if (data?.warning) lines.push(`WARN ${data.warning}`);
   if (data?.resources && result.command === "explain") {
     for (const resource of data.resources) {
       const declaration = resource.declaration ? ` ${JSON.stringify(resource.declaration)}` : "";

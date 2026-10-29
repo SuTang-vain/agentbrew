@@ -5,14 +5,22 @@ import type { LayerName } from "./bundle.js";
 import type { Context } from "./context.js";
 import { writeStateJson } from "./state.js";
 
+export interface GitSourceDescriptor {
+  url: string;
+  path: string;
+  ref: "HEAD";
+  commit: string;
+}
+
 export interface SourceRegistrationLayer {
   layer: LayerName;
   file: string;
   sha256: string;
+  git?: GitSourceDescriptor;
 }
 
 export interface SourceRegistration {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   kind: "agentbrew-source-registration";
   target: { agentDir: string };
   layers: SourceRegistrationLayer[];
@@ -41,10 +49,28 @@ function hash(value: unknown, where: string): string {
   return value;
 }
 
-function parseLayer(value: unknown, index: number): SourceRegistrationLayer {
+function parseGit(value: unknown, where: string): SourceRegistrationLayer["git"] {
+  if (!object(value)) throw new Error(`${where} must be an object`);
+  keys(value, ["url", "path", "ref", "commit"], where);
+  if (typeof value.url !== "string" || !value.url || /[\x00-\x20]/.test(value.url)) throw new Error(`${where}.url is invalid`);
+  if (/^https?:\/\//.test(value.url)) {
+    const url = new URL(value.url);
+    if (url.username || url.password) throw new Error(`${where}.url must not contain credentials`);
+  }
+  if (typeof value.path !== "string" || !value.path || value.path.startsWith("/") || value.path.includes("\\")
+    || value.path.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error(`${where}.path must be a safe relative repository path`);
+  }
+  if (value.ref !== "HEAD" || typeof value.commit !== "string" || !/^[0-9a-f]{40}$/.test(value.commit)) {
+    throw new Error(`${where} requires HEAD and a full lowercase commit`);
+  }
+  return { url: value.url, path: value.path, ref: "HEAD", commit: value.commit };
+}
+
+function parseLayer(value: unknown, index: number, schemaVersion: 1 | 2): SourceRegistrationLayer {
   const where = `sources.json layers[${index}]`;
   if (!object(value)) throw new Error(`${where} must be an object`);
-  keys(value, ["layer", "file", "sha256"], where);
+  keys(value, schemaVersion === 2 ? ["layer", "file", "sha256", "git"] : ["layer", "file", "sha256"], where);
   if (typeof value.layer !== "string" || !LAYER_ORDER.includes(value.layer as LayerName)) {
     throw new Error(`${where}.layer is invalid`);
   }
@@ -52,22 +78,28 @@ function parseLayer(value: unknown, index: number): SourceRegistrationLayer {
   if (typeof value.file !== "string" || !path.isAbsolute(value.file) || path.resolve(value.file) !== value.file) {
     throw new Error(`${where}.file must be a normalized absolute path`);
   }
-  return { layer, file: value.file, sha256: hash(value.sha256, `${where}.sha256`) };
+  return {
+    layer,
+    file: value.file,
+    sha256: hash(value.sha256, `${where}.sha256`),
+    ...(value.git === undefined ? {} : { git: parseGit(value.git, `${where}.git`) }),
+  };
 }
 
 function parseRegistration(context: Context, value: unknown): SourceRegistration {
   if (!object(value)) throw new Error("sources.json must contain an object");
   keys(value, ["schemaVersion", "kind", "target", "layers", "inputHash"], "sources.json");
-  if (value.schemaVersion !== 1 || value.kind !== "agentbrew-source-registration") {
+  if ((value.schemaVersion !== 1 && value.schemaVersion !== 2) || value.kind !== "agentbrew-source-registration") {
     throw new Error("sources.json has an unsupported schemaVersion or kind");
   }
+  const schemaVersion = value.schemaVersion;
   if (!object(value.target)) throw new Error("sources.json target must be an object");
   keys(value.target, ["agentDir"], "sources.json target");
   if (value.target.agentDir !== context.agentDir) throw new Error("sources.json belongs to a different Pi target");
   if (!Array.isArray(value.layers) || value.layers.length < 1 || value.layers.length > LAYER_ORDER.length) {
     throw new Error("sources.json requires one complete ordered layer list");
   }
-  const layers = value.layers.map(parseLayer);
+  const layers = value.layers.map((entry, index) => parseLayer(entry, index, schemaVersion));
   let previous = -1;
   for (const { layer } of layers) {
     const current = LAYER_ORDER.indexOf(layer);
@@ -75,7 +107,7 @@ function parseRegistration(context: Context, value: unknown): SourceRegistration
     previous = current;
   }
   return {
-    schemaVersion: 1,
+    schemaVersion,
     kind: "agentbrew-source-registration",
     target: { agentDir: context.agentDir },
     layers,

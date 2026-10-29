@@ -49,7 +49,7 @@ export async function resolveCommand(context: Context, selected: string[]): Prom
     return result;
   }
   try {
-    const bundle = loadBundle(context.layers);
+    const bundle = loadBundle(context.layers, context);
     if (!bundle) throw new Error("resolve requires at least one explicit --layer or a registered source binding");
     const client = createMetadataClient({
       releaseUrl: context.env.AGENTBREW_PI_RELEASE_URL,

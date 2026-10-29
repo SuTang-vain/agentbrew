@@ -21,6 +21,7 @@ export interface HostResolution {
   source: "pi-release-channel";
   reason: string;
   integrity?: string;
+  compatibleRange?: string;
   dependencies: Record<string, string>;
 }
 
@@ -35,6 +36,7 @@ export interface ResourceResolution {
   action: ResourceAction;
   reason: string;
   integrity?: string;
+  releasePin?: boolean;
   peerEvidence: PeerEvidence[];
 }
 
@@ -45,6 +47,7 @@ export interface ResolveReport {
   host: HostResolution | null;
   resources: ResourceResolution[];
   errors: Array<{ source: string; message: string }>;
+  release?: { name: string; hostCompatible?: string };
 }
 
 interface PackageManifest {
@@ -152,6 +155,49 @@ function resolveCurrent(
     targetVersion: compatible ? current.version : null,
     action: compatible ? "keep" : peers.status === "incompatible" ? "blocked" : "unknown",
     reason: compatible ? `keep current version; ${peers.reason}` : peers.reason,
+    peerEvidence: peers.evidence,
+  };
+}
+
+function releasePinned(resource: ResolvedResource): boolean {
+  const declaration = resource.declaration as NpmDeclaration;
+  return declaration.update === "fixed" && declaration.source.integrity !== undefined;
+}
+
+function resolveReleasePin(
+  resource: ResolvedResource,
+  required: boolean,
+  current: PackageManifest | null,
+  value: unknown,
+  host: HostResolution,
+): ResourceResolution {
+  const declaration = resource.declaration as NpmDeclaration;
+  const name = packageForResource(resource.id);
+  const candidate = manifest(value, name, declaration.source.spec);
+  const base = {
+    ...emptyResource(resource, required, current?.version ?? null, "blocked", "Release pin metadata is invalid"),
+    releasePin: true,
+    integrity: declaration.source.integrity,
+  };
+  if (!candidate) return { ...base, reason: "Release pin requires an exact registry manifest with matching package identity" };
+  if (!candidate.integrity || candidate.integrity !== declaration.source.integrity) {
+    return { ...base, reason: "Release pin integrity does not match the registry manifest" };
+  }
+  const peers = evaluatePeers(candidate, host);
+  if (peers.status !== "compatible") {
+    return { ...base, reason: `Release pin is not proven compatible with the target host; ${peers.reason}`, peerEvidence: peers.evidence };
+  }
+  const keep = current?.version === candidate.version;
+  return {
+    id: resource.id,
+    policy: "fixed",
+    required,
+    currentVersion: current?.version ?? null,
+    targetVersion: candidate.version,
+    action: keep ? "keep" : "update",
+    reason: `${keep ? "current version matches" : "install the exact version selected by"} the reviewed Release; ${peers.reason}`,
+    integrity: declaration.source.integrity,
+    releasePin: true,
     peerEvidence: peers.evidence,
   };
 }
@@ -279,14 +325,26 @@ export async function resolveConfiguration(
     }
     const comparison = compareNpmVersions(release.version, currentHost.version);
     if (comparison === null) throw new Error("current or released Pi version is invalid");
-    const update = comparison > 0;
+    const compatibleRange = bundle.release?.hostCompatible;
+    const currentAllowed = compatibleRange ? satisfiesPeerRange(currentHost.version, compatibleRange) : true;
+    const releaseAllowed = compatibleRange ? satisfiesPeerRange(release.version, compatibleRange) : true;
+    if (currentAllowed === null || releaseAllowed === null) throw new Error("Release host compatibility range is unsupported");
+    if (currentAllowed === false && (comparison <= 0 || releaseAllowed !== true)) {
+      throw new Error(`current Pi ${currentHost.version} is outside ${compatibleRange}; the release channel cannot provide a newer compatible host`);
+    }
+    const update = comparison > 0 && releaseAllowed === true;
     const targetVersion = update ? release.version : currentHost.version;
     host = {
       currentVersion: currentHost.version,
       targetVersion,
       action: update ? "update" : "keep",
       source: "pi-release-channel",
-      reason: update ? "Pi release channel selects a newer host" : "current host is at or above the release version; no downgrade is planned",
+      reason: update
+        ? `Pi release channel selects a newer host${compatibleRange ? ` within ${compatibleRange}` : ""}`
+        : compatibleRange && releaseAllowed === false
+          ? `current host satisfies ${compatibleRange}; the newer release is outside that range`
+          : "current host is at or above the release version; no downgrade is planned",
+      ...(compatibleRange ? { compatibleRange } : {}),
       dependencies: {},
     };
     const hostManifestValue = await client.getManifest(HOST_PACKAGE, targetVersion);
@@ -303,9 +361,10 @@ export async function resolveConfiguration(
 
   const resolved: ResourceResolution[] = [];
   const fetchable = host
-    ? resources.filter((resource) => (resource.declaration as NpmDeclaration).update === "compatible")
+    ? resources.filter((resource) => (resource.declaration as NpmDeclaration).update === "compatible" || releasePinned(resource))
     : [];
   const packuments = new Map<string, unknown>();
+  const pinManifests = new Map<string, unknown>();
   const failures = new Map<string, Error>();
   if (fetchable.length > 0) {
     progress(`resolving ${fetchable.length} npm resource(s)…`);
@@ -313,7 +372,12 @@ export async function resolveConfiguration(
     await eachLimit(fetchable, METADATA_CONCURRENCY, async (resource) => {
       progress(`resolving ${resource.id}…`);
       try {
-        packuments.set(resource.id, await client.getPackument(packageForResource(resource.id)));
+        if (releasePinned(resource)) {
+          const declaration = resource.declaration as NpmDeclaration;
+          pinManifests.set(resource.id, await client.getManifest(packageForResource(resource.id), declaration.source.spec));
+        } else {
+          packuments.set(resource.id, await client.getPackument(packageForResource(resource.id)));
+        }
       } catch (error) {
         failures.set(resource.id, error instanceof Error ? error : new Error(String(error)));
       }
@@ -330,12 +394,25 @@ export async function resolveConfiguration(
       continue;
     }
     const declaration = resource.declaration as NpmDeclaration;
+    const failure = failures.get(resource.id);
+    if (releasePinned(resource)) {
+      if (failure) {
+        errors.push({ source: resource.id, message: redact(failure.message) });
+        resolved.push({
+          ...emptyResource(resource, required, installed.value?.version ?? null, "blocked", `Release pin metadata is unavailable: ${redact(failure.message)}`),
+          releasePin: true,
+          integrity: declaration.source.integrity,
+        });
+      } else {
+        resolved.push(resolveReleasePin(resource, required, installed.value, pinManifests.get(resource.id), host));
+      }
+      continue;
+    }
     if (declaration.update !== "compatible") {
       if (installed.value) resolved.push(resolveCurrent(resource, required, installed.value, host));
       else resolved.push(emptyResource(resource, required, null, required ? "blocked" : "unknown", installed.error ?? "current package is unavailable"));
       continue;
     }
-    const failure = failures.get(resource.id);
     if (failure) {
       errors.push({ source: resource.id, message: redact(failure.message) });
       resolved.push(emptyResource(
@@ -361,5 +438,6 @@ export async function resolveConfiguration(
     host,
     resources: resolved,
     errors,
+    ...(bundle.release ? { release: { name: bundle.release.name, ...(bundle.release.hostCompatible ? { hostCompatible: bundle.release.hostCompatible } : {}) } } : {}),
   };
 }

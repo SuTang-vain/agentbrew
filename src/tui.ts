@@ -57,7 +57,7 @@ async function scopedCommand(
 function sourcesResult(context: Context): CommandResult {
   if (context.layerOrigin !== "explicit") return withLayerOrigin(sourceCommand(context, "list"), context);
   try {
-    const bundle = loadBundle(context.layers);
+    const bundle = loadBundle(context.layers, context);
     if (!bundle) throw new Error("explicit sources require at least one layer");
     return {
       schemaVersion: 1,
@@ -91,7 +91,7 @@ function updateCacheKey(base: Context): string | null {
   }
   if (probe.layers.length === 0) return null;
   try {
-    const bundle = loadBundle(probe.layers);
+    const bundle = loadBundle(probe.layers, probe);
     if (!bundle) return null;
     const ownership = readOwnership(probe);
     return `${bundle.inputHash}:${resolvedUpdateFingerprint(probe, bundle)}:${JSON.stringify(ownership?.resources ?? null)}`;

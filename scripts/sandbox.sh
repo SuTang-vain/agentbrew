@@ -40,7 +40,8 @@ export PATH="$AGENTBREW_SANDBOX/bin:$PATH"
 export PS1="(agentbrew-sandbox) \u@\h:\w\\$ "
 
 METADATA_PID=""
-if [[ "$SCENARIO" == bundle ]]; then
+if [[ "$SCENARIO" =~ ^(bundle|release|git|artifact-failure)$ ]]; then
+  export AGENTBREW_SCENARIO="$SCENARIO"
   node "$REPO_ROOT/scripts/sandbox-metadata.mjs" --ready "$AGENTBREW_SANDBOX/metadata.json" &
   METADATA_PID=$!
   for _ in {1..50}; do
@@ -55,6 +56,10 @@ if [[ "$SCENARIO" == bundle ]]; then
   METADATA_ORIGIN=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).origin)' "$AGENTBREW_SANDBOX/metadata.json")
   export AGENTBREW_PI_RELEASE_URL="$METADATA_ORIGIN/release"
   export AGENTBREW_NPM_REGISTRY_URL="$METADATA_ORIGIN/registry"
+  export AGENTBREW_PI_INSTALLER_URL="$METADATA_ORIGIN/installer"
+  if [[ "$SCENARIO" == release ]]; then
+    export MOCK_NPM_INTEGRITY=$(node -e 'process.stdout.write(`sha512-${Buffer.alloc(64, 12).toString("base64")}`)')
+  fi
 fi
 cleanup() {
   if [[ -n "$METADATA_PID" ]]; then
@@ -79,7 +84,7 @@ Non-interactive Repair example for the default existing scenario:
   agentbrew init --expect repairable --mode repair \
     --resource pi.host-links --resource herdr.pi-integration --apply
 
-Available scenarios: existing, empty, healthy, broken, no-host, bundle.
+Available scenarios: existing, empty, healthy, broken, no-host, bundle, release, git, artifact-failure.
 Start with: npm run sandbox -- --scenario empty
 
 Useful files:
@@ -113,6 +118,39 @@ Layer explanation and selective personal-layer apply:
   agentbrew apply --plan "$AGENTBREW_SANDBOX/bundle-plan.json"
   agentbrew adopt --resource npm:pi-subagents \
     --output "$AGENTBREW_SANDBOX/adoption-proposal.json"
+EOF
+fi
+
+if [[ "$SCENARIO" == release ]]; then
+  cat <<'EOF'
+
+Fixed Release scenario:
+  agentbrew source list
+  agentbrew resolve --verbose
+  agentbrew update --dry-run
+  agentbrew update
+  agentbrew doctor
+EOF
+fi
+
+if [[ "$SCENARIO" == git ]]; then
+  cat <<'EOF'
+
+Git source scenario:
+  agentbrew source list
+  agentbrew update --dry-run   # uses the registered commit
+  agentbrew source refresh     # advances only source state
+  agentbrew update             # refreshes, resolves, installs, and checks health
+EOF
+fi
+
+if [[ "$SCENARIO" == artifact-failure ]]; then
+  cat <<'EOF'
+
+Artifact failure scenario:
+  agentbrew update --dry-run
+  agentbrew update             # stops before Pi/npm/herdr execution
+  cat "$AGENTBREW_SANDBOX/commands.log"
 EOF
 fi
 

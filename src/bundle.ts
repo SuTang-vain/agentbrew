@@ -5,6 +5,13 @@ import type { Context } from "./context.js";
 import { satisfiesNpmConstraint, validNpmConstraint } from "./npm-spec.js";
 import { HOST_PACKAGE, readPiManifest } from "./providers/pi.js";
 import type { HerdrInspection } from "./providers/herdr.js";
+import {
+  exceptionState,
+  parseReleaseMetadata,
+  validateReleaseIntegrity,
+  type BundleSubject,
+  type ReleaseMetadata,
+} from "./release.js";
 import type { Difference, HealthCheck, Ownership } from "./types.js";
 
 export const LAYERS = ["public", "team", "personal", "machine"] as const;
@@ -12,7 +19,7 @@ export type LayerName = typeof LAYERS[number];
 export type UpdatePolicy = "compatible" | "fixed" | "manual";
 
 export interface NpmDeclaration {
-  source: { type: "npm"; spec: string };
+  source: { type: "npm"; spec: string; integrity?: string };
   update: UpdatePolicy;
 }
 
@@ -54,6 +61,7 @@ export interface ResolvedBundle {
   required: string[];
   forbidden: string[];
   inputHash: string;
+  release?: ReleaseMetadata;
 }
 
 interface LayerFile {
@@ -63,6 +71,7 @@ interface LayerFile {
   remove: Set<string>;
   required: Set<string>;
   forbidden: Set<string>;
+  release?: ReleaseMetadata;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -88,13 +97,14 @@ export function packageForResource(id: string): string {
   return id.slice(4);
 }
 
-function resourceDeclaration(id: string, value: unknown, where: string): ResourceDeclaration {
+function resourceDeclaration(id: string, value: unknown, where: string, release = false): ResourceDeclaration {
   if (!isObject(value)) throw new Error(`${where} must be a complete resource declaration object`);
   if (id.startsWith("npm:")) {
     packageForResource(id);
     checkKeys(value, ["source", "update"], where);
     if (!isObject(value.source)) throw new Error(`${where}.source must be an npm source object`);
-    checkKeys(value.source, ["type", "spec"], `${where}.source`);
+    const releasePin = release && value.update === "fixed";
+    checkKeys(value.source, releasePin ? ["type", "spec", "integrity"] : ["type", "spec"], `${where}.source`);
     if (value.source.type !== "npm" || typeof value.source.spec !== "string") {
       throw new Error(`${where}.source requires type npm and a spec string`);
     }
@@ -108,7 +118,8 @@ function resourceDeclaration(id: string, value: unknown, where: string): Resourc
     if (value.update === "fixed" && !validNpmConstraint(spec, true)) {
       throw new Error(`${where} fixed policy requires an exact semver, not a range`);
     }
-    return { source: { type: "npm", spec }, update: value.update as UpdatePolicy };
+    const integrity = releasePin ? validateReleaseIntegrity(value.source.integrity, `${where}.source.integrity`) : undefined;
+    return { source: { type: "npm", spec, ...(integrity ? { integrity } : {}) }, update: value.update as UpdatePolicy };
   }
   if (id === "herdr.pi-integration") {
     checkKeys(value, ["update"], where);
@@ -137,14 +148,19 @@ function readLayer(kind: LayerName, file: string): LayerFile {
   const value: unknown = JSON.parse(text);
   const where = `${kind} layer ${file}`;
   if (!isObject(value)) throw new Error(`${where} must contain a JSON object`);
-  checkKeys(value, ["schemaVersion", "kind", "layer", "resources", "override", "remove", "required", "forbidden"], where);
-  if (value.schemaVersion !== 1 || value.kind !== "agentbrew-layer" || value.layer !== kind) {
-    throw new Error(`${where} must have schemaVersion 1, kind agentbrew-layer, and layer ${kind}`);
+  const releaseInput = value.kind === "agentbrew-release";
+  checkKeys(value, releaseInput
+    ? ["schemaVersion", "kind", "layer", "release", "resources", "required", "forbidden", "host", "exceptions", "verification"]
+    : ["schemaVersion", "kind", "layer", "resources", "override", "remove", "required", "forbidden"], where);
+  if (value.schemaVersion !== 1 || value.layer !== kind || (!releaseInput && value.kind !== "agentbrew-layer")) {
+    throw new Error(`${where} has an unsupported schemaVersion, kind, or layer`);
   }
+  if (releaseInput && kind !== "team") throw new Error(`${where} must place a Bundle Release in the team layer`);
   if (!isObject(value.resources)) throw new Error(`${where}.resources must be an object`);
+  const release = releaseInput ? parseReleaseMetadata(value, where) : undefined;
   const resources: Record<string, ResourceDeclaration> = {};
   for (const id of Object.keys(value.resources).sort()) {
-    resources[id] = resourceDeclaration(id, value.resources[id], `${where}.resources.${id}`);
+    resources[id] = resourceDeclaration(id, value.resources[id], `${where}.resources.${id}`, releaseInput);
   }
   const override = stringSet(value.override, "override", where);
   const remove = stringSet(value.remove, "remove", where);
@@ -168,6 +184,11 @@ function readLayer(kind: LayerName, file: string): LayerFile {
   for (const id of required) {
     if (forbidden.has(id)) throw new Error(`${where} cannot both require and forbid ${id}`);
   }
+  for (const entry of release?.exceptions ?? []) {
+    validateReference(entry.resource);
+    if (!required.has(entry.resource)) throw new Error(`${where} exception ${entry.resource} must reference a team-required resource`);
+    if (!resources[entry.resource]) throw new Error(`${where} exception ${entry.resource} must reference a declared resource`);
+  }
   return {
     source: { layer: kind, file, sha256: createHash("sha256").update(text).digest("hex") },
     resources,
@@ -175,6 +196,7 @@ function readLayer(kind: LayerName, file: string): LayerFile {
     remove,
     required,
     forbidden,
+    ...(release ? { release } : {}),
   };
 }
 
@@ -195,7 +217,7 @@ export function parseLayerArguments(inputs: string[]): Array<{ layer: LayerName;
   return parsed.sort((a, b) => LAYERS.indexOf(a.layer) - LAYERS.indexOf(b.layer));
 }
 
-export function loadBundle(inputs: string[]): ResolvedBundle | null {
+export function loadBundle(inputs: string[], subject: BundleSubject = {}): ResolvedBundle | null {
   if (inputs.length === 0) return null;
   const layers = parseLayerArguments(inputs).map(({ layer, file }) => readLayer(layer, file));
   const resources: Record<string, ResolvedResource> = {};
@@ -203,6 +225,10 @@ export function loadBundle(inputs: string[]): ResolvedBundle | null {
   const seen = new Set<string>();
   const required = new Set<string>();
   const forbidden = new Set<string>();
+  const release = layers.find((layer) => layer.release)?.release;
+  const mayOverrideRequired = (id: string): boolean => release?.exceptions.some(
+    (entry) => entry.resource === id && exceptionState(entry, subject) === "applied",
+  ) ?? false;
 
   for (const layer of layers) {
     for (const id of [...layer.remove].sort()) {
@@ -216,7 +242,9 @@ export function loadBundle(inputs: string[]): ResolvedBundle | null {
       seen.add(id);
     }
     for (const [id, declaration] of Object.entries(layer.resources)) {
-      if (required.has(id)) throw new Error(`${layer.source.layer} cannot override team-required resource ${id}`);
+      if (required.has(id) && !mayOverrideRequired(id)) {
+        throw new Error(`${layer.source.layer} cannot override team-required resource ${id} without a matching team exception`);
+      }
       if (forbidden.has(id)) throw new Error(`${layer.source.layer} cannot add team-forbidden resource ${id}`);
       if (seen.has(id) && !layer.override.has(id)) {
         throw new Error(`${layer.source.layer} must explicitly override or remove-and-restore resource ${id}`);
@@ -246,6 +274,7 @@ export function loadBundle(inputs: string[]): ResolvedBundle | null {
     required: [...required].sort(),
     forbidden: [...forbidden].sort(),
     inputHash,
+    ...(release ? { release } : {}),
   };
 }
 
@@ -259,6 +288,7 @@ export function bundleSummary(bundle: ResolvedBundle | null): unknown {
     required: bundle.required,
     forbidden: bundle.forbidden,
     inputHash: bundle.inputHash,
+    ...(bundle.release ? { release: { name: bundle.release.name, ...(bundle.release.hostCompatible ? { hostCompatible: bundle.release.hostCompatible } : {}) } } : {}),
   };
 }
 

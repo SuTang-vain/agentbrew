@@ -7,7 +7,7 @@ import type { CommandResult } from "./types.js";
 
 export function prepareContextSources(context: Context): void {
   if (context.layerOrigin === "explicit") {
-    loadBundle(context.layers);
+    loadBundle(context.layers, context);
     return;
   }
   context.layers = [];
@@ -16,7 +16,7 @@ export function prepareContextSources(context: Context): void {
   if (!registration) return;
   context.layerOrigin = "registered";
   context.layers = registrationLayers(registration);
-  loadBundle(context.layers);
+  loadBundle(context.layers, context);
 }
 
 export function sourceInputError(context: Context, command: CommandResult["command"], error: unknown): CommandResult {

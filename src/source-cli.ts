@@ -1,6 +1,7 @@
 import type { Context } from "./context.js";
 import { bundleSummary } from "./bundle.js";
 import { redact } from "./process.js";
+import { createGitRegistration, refreshGitRegistration, validateGitRegistration } from "./source-git.js";
 import { createRegistration, sourceStatus } from "./sources.js";
 import {
   readSourceRegistration,
@@ -11,7 +12,7 @@ import {
 import { withOperationLock } from "./state.js";
 import { failedStep, skippedStep, successfulStep, type CommandResult, type OverallStatus } from "./types.js";
 
-export type SourceAction = "set" | "list" | "clear";
+export type SourceAction = "set" | "list" | "clear" | "refresh";
 
 function result(context: Context, action: SourceAction): CommandResult {
   return {
@@ -35,10 +36,10 @@ function failure(context: Context, action: SourceAction, error: unknown, status:
   };
 }
 
-function setSources(context: Context): CommandResult {
+function setSources(context: Context, gitInputs: string[]): CommandResult {
   let prepared: ReturnType<typeof createRegistration>;
   try {
-    prepared = createRegistration(context);
+    prepared = gitInputs.length ? createGitRegistration(context, gitInputs) : createRegistration(context);
   } catch (error) {
     return failure(context, "set", error, "not-executed");
   }
@@ -46,7 +47,7 @@ function setSources(context: Context): CommandResult {
     return withOperationLock(context, () => {
       const output = result(context, "set");
       try {
-        const current = createRegistration(context);
+        const current = gitInputs.length ? validateGitRegistration(context, prepared.registration) : createRegistration(context);
         if (JSON.stringify(current.registration) !== JSON.stringify(prepared.registration)) {
           output.status = "not-executed";
           output.error = "source layers changed while waiting for the operation lock; review and retry";
@@ -124,8 +125,54 @@ function clearSources(context: Context): CommandResult {
   }
 }
 
-export function sourceCommand(context: Context, action: SourceAction): CommandResult {
-  if (action === "set") return setSources(context);
+export function refreshRegisteredSources(context: Context) {
+  const registration = readSourceRegistration(context);
+  if (!registration || !registration.layers.some((layer) => layer.git)) return registration;
+  const fingerprint = sourceRegistrationFingerprint(context);
+  return withOperationLock(context, () => {
+    const current = readSourceRegistration(context);
+    if (!current || sourceRegistrationFingerprint(context) !== fingerprint
+      || JSON.stringify(current) !== JSON.stringify(registration)) {
+      throw new Error("the source binding changed while waiting for the operation lock; review and retry");
+    }
+    const refreshed = refreshGitRegistration(context, current);
+    if (JSON.stringify(refreshed.registration) !== JSON.stringify(current)) writeSourceRegistration(context, refreshed.registration);
+    return refreshed.registration;
+  });
+}
+
+function refreshSources(context: Context): CommandResult {
+  const before = readSourceRegistration(context);
+  if (!before) return failure(context, "refresh", "source refresh requires a registered source binding", "not-executed");
+  if (!before.layers.some((layer) => layer.git)) {
+    const output = result(context, "refresh");
+    output.steps.push(skippedStep("source-refresh", "Refresh registered Git sources", "the binding contains only local files"));
+    return output;
+  }
+  try {
+    const after = refreshRegisteredSources(context)!;
+    const output = result(context, "refresh");
+    const changes = after.layers.flatMap((layer) => {
+      const previous = before.layers.find((candidate) => candidate.layer === layer.layer);
+      return layer.git && previous?.git && layer.git.commit !== previous.git.commit
+        ? [{ layer: layer.layer, from: previous.git.commit, to: layer.git.commit }]
+        : [];
+    });
+    const changed = JSON.stringify(after) !== JSON.stringify(before);
+    output.changes = changed ? "observed" : "none";
+    output.steps.push(changed
+      ? successfulStep("source-refresh", "Refresh registered Git sources", "observed", `${changes.length} Git source(s) advanced; managed resources were not changed`)
+      : skippedStep("source-refresh", "Refresh registered Git sources", "all registered Git sources already match HEAD"));
+    output.data = { action: "refresh", resourcesChanged: false, changes, registration: after };
+    return output;
+  } catch (error) {
+    return failure(context, "refresh", error, "not-executed");
+  }
+}
+
+export function sourceCommand(context: Context, action: SourceAction, gitInputs: string[] = []): CommandResult {
+  if (action === "set") return setSources(context, gitInputs);
   if (action === "clear") return clearSources(context);
+  if (action === "refresh") return refreshSources(context);
   return listSources(context);
 }

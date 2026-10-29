@@ -19,6 +19,7 @@ function layer(f, spec = "^0.83.0", name = "personal") {
 function prepare(t) {
   const f = fixture(t);
   f.setHost("1.5.0");
+  fs.rmSync(path.join(f.agentDir, "install", "releases", "1.5.0"), { recursive: true, force: true });
   const dir = path.join(f.npmDir, "node_modules", "pi-subagents");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({

@@ -25,6 +25,7 @@ export async function metadataServer(t, options = {}) {
     env: {
       AGENTBREW_PI_RELEASE_URL: `${origin}/release`,
       AGENTBREW_NPM_REGISTRY_URL: `${origin}/registry`,
+      AGENTBREW_PI_INSTALLER_URL: `${origin}/installer`,
     },
   };
 }

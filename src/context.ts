@@ -11,6 +11,8 @@ export interface Context {
   dryRun: boolean;
   selftest: boolean;
   layers: string[];
+  user?: string;
+  machine?: string;
   layerOrigin: "explicit" | "registered" | "none";
   progress?: (message: string) => void;
   signal?: AbortSignal;
@@ -36,6 +38,8 @@ export function createContext(options: ContextOptions = {}, env: NodeJS.ProcessE
     dryRun: options.dryRun ?? false,
     selftest: options.selftest ?? false,
     layers: [...(options.layers ?? [])],
+    ...(options.user?.trim() ? { user: options.user.trim() } : {}),
+    ...(options.machine?.trim() ? { machine: options.machine.trim() } : {}),
     layerOrigin: options.layers?.length ? "explicit" : "none",
     env,
   };

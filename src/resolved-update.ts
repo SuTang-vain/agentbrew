@@ -6,9 +6,17 @@ import { installLockedNpmResources, type LockedNpmResource } from "./immutable-n
 import { createMetadataClient } from "./metadata.js";
 import { satisfiesNpmConstraint } from "./npm-spec.js";
 import { isManaged, readOwnership, type OwnershipState } from "./ownership.js";
+import {
+  assertTargetReleaseUnavailable,
+  piArtifactEvidence,
+  preparePiArtifacts,
+  withVerifiedPiInstaller,
+  type PiArtifactPlan,
+} from "./pi-artifacts.js";
 import { redact } from "./process.js";
 import { resolveConfiguration, type ResolveReport } from "./resolve.js";
 import { metadataOffline, resolutionChecks } from "./resolve-cli.js";
+import { readSourceRegistration } from "./source-state.js";
 import { withOperationLock, writeStateJson } from "./state.js";
 import { doctorHerdrInspection, inspectHerdr, updateHerdr, type HerdrInspection } from "./providers/herdr.js";
 import {
@@ -201,7 +209,16 @@ export async function resolvedUpdateCommand(
     return notExecuted(context, error instanceof Error ? error.message : String(error));
   }
 
-  let data: Record<string, unknown> = { nativeMode: false, resolvedMode: true, layerOrigin: context.layerOrigin, bundle: bundleSummary(bundle), resolution: report };
+  const cachedGit = context.dryRun && context.layerOrigin === "registered"
+    && readSourceRegistration(context)?.layers.some((layer) => layer.git);
+  let data: Record<string, unknown> = {
+    nativeMode: false,
+    resolvedMode: true,
+    layerOrigin: context.layerOrigin,
+    bundle: bundleSummary(bundle),
+    resolution: report,
+    ...(cachedGit ? { sourceRefresh: { state: "cached", command: "agentbrew source refresh", message: "dry-run uses the registered commit; refresh explicitly to advance it" } } : {}),
+  };
   const result = updateResult(context);
   result.data = data;
   result.checks = resolutionChecks(report);
@@ -238,26 +255,34 @@ export async function resolvedUpdateCommand(
   }
 
   let snapshot: unknown;
+  let piArtifacts: PiArtifactPlan | undefined;
   try {
+    if (report.host.action === "update") {
+      assertTargetReleaseUnavailable(context, report.host.targetVersion);
+      piArtifacts = await preparePiArtifacts(context, report.host.targetVersion);
+      data = { ...data, piArtifacts: piArtifactEvidence(piArtifacts) };
+      result.data = data;
+    }
     snapshot = snapshotPi(context);
   } catch (error) {
     return notExecuted(context, error instanceof Error ? error.message : String(error));
   }
 
   try {
-    return withOperationLock(context, () => {
+    return await withOperationLock(context, async () => {
       const executed = updateResult(context);
       executed.data = data;
       executed.steps.push(successfulStep("preflight", "Resolve and validate the immutable Bundle update plan"));
       let authorized = false;
       try {
-        const currentBundle = loadBundle(context.layers);
+        const currentBundle = loadBundle(context.layers, context);
         if (!currentBundle || currentBundle.inputHash !== bundle.inputHash
           || JSON.stringify(readOwnership(context)) !== JSON.stringify(ownership)
           || resolvedUpdateFingerprint(context, bundle) !== fingerprint
           || bundleDifferences(context, currentBundle).length > 0) {
           throw new Error("the target, ownership, Bundle, lockfile, or installed packages changed during resolution; review and retry");
         }
+        if (report.host!.action === "update") assertTargetReleaseUnavailable(context, report.host!.targetVersion);
         authorized = true;
         writeStateJson(context, "last-resolution.json", {
           schemaVersion: 1,
@@ -268,9 +293,13 @@ export async function resolvedUpdateCommand(
           report,
         });
         writeStateJson(context, "last-snapshot.json", { schemaVersion: 1, kind: "agentbrew-update-snapshot", pi: snapshot, herdr });
+        if (piArtifacts) writeStateJson(context, "last-pi-install-plan.json", piArtifactEvidence(piArtifacts));
 
         if (report.host!.action === "update") {
-          executed.steps.push(updatePiHostTo(context, report.host!.targetVersion));
+          executed.steps.push(await withVerifiedPiInstaller(
+            piArtifacts!,
+            (installerBase) => updatePiHostTo(context, report.host!.targetVersion, installerBase),
+          ));
         } else {
           try {
             verifyPiHost(context, report.host!.targetVersion);

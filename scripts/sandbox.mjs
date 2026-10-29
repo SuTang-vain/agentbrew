@@ -9,7 +9,7 @@ if (root !== path.join(repo, ".sandbox")) throw new Error("unsafe sandbox path")
 const args = process.argv.slice(2);
 const scenarioIndex = args.indexOf("--scenario");
 const scenario = scenarioIndex === -1 ? "existing" : args[scenarioIndex + 1];
-if (!["existing", "empty", "healthy", "broken", "no-host", "bundle"].includes(scenario)) {
+if (!["existing", "empty", "healthy", "broken", "no-host", "bundle", "release", "git", "artifact-failure"].includes(scenario)) {
   throw new Error(`unknown sandbox scenario: ${scenario}`);
 }
 if (fs.existsSync(root) && (!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink())) {
@@ -94,11 +94,13 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 if [ "$1" = "update" ] && [ "$2" = "--all" ]; then
+  node ${JSON.stringify(path.join(repo, "scripts", "sandbox-install-host.mjs"))} || exit $?
   printf '1.5.0\\n' > "$PI_AGENT_DIR/install/current-version"
   printf 'Sandbox Pi and extensions updated to 1.5.0\\n'
   exit 0
 fi
 if [ "$1" = "update" ] && [ "$2" = "--self" ]; then
+  node ${JSON.stringify(path.join(repo, "scripts", "sandbox-install-host.mjs"))} || exit $?
   printf '1.5.0\\n' > "$PI_AGENT_DIR/install/current-version"
   printf 'Sandbox Pi host updated to 1.5.0; extensions unchanged\\n'
   exit 0
@@ -123,7 +125,7 @@ if [ "$1" = "install" ]; then
       const packages = { "": { name: pkg.name, dependencies } };
       for (const name of externalNames) {
         const version = versions[name];
-        packages["node_modules/" + name] = { version, integrity: "sha512-sandbox-" + version };
+        packages["node_modules/" + name] = { version, integrity: process.env.MOCK_NPM_INTEGRITY || "sha512-sandbox-" + version };
       }
       return { lockfileVersion: 3, packages };
     }
@@ -196,26 +198,40 @@ printf 'unsupported sandbox herdr command\\n' >&2
 exit 2
 `);
 
-if (scenario === "healthy" || scenario === "bundle") {
-  const env = {
-    ...process.env,
-    AGENTBREW_SANDBOX: root,
-    AGENTBREW_STATE_DIR: path.join(root, "state"),
-    HOME: home,
-    PI_AGENT_DIR: agent,
-    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-  };
+const managedScenario = ["healthy", "bundle", "release", "git", "artifact-failure"].includes(scenario);
+const env = {
+  ...process.env,
+  AGENTBREW_SANDBOX: root,
+  AGENTBREW_STATE_DIR: path.join(root, "state"),
+  HOME: home,
+  PI_AGENT_DIR: agent,
+  PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+};
+if (managedScenario) {
   const result = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "update"], { env, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`cannot initialize healthy sandbox: ${result.stderr || result.stdout}`);
-  if (scenario === "bundle") {
+  if (scenario !== "healthy") {
     write(path.join(agent, "install", "current-version"), "1.4.0\n");
     const repaired = spawnSync(process.execPath, [
       path.join(repo, "dist", "bin", "agentbrew.js"),
       "init", "--expect", "repairable", "--mode", "repair", "--resource", "pi.host-links", "--apply",
     ], { env, encoding: "utf8" });
-    if (repaired.status !== 0) throw new Error(`cannot prepare the bundle host-update scenario: ${repaired.stderr || repaired.stdout}`);
+    if (repaired.status !== 0) throw new Error(`cannot prepare the resolved-update scenario: ${repaired.stderr || repaired.stdout}`);
+    fs.rmSync(path.join(agent, "install", "releases", "1.5.0"), { recursive: true, force: true });
   }
   write(path.join(root, "commands.log"), "");
+}
+
+if (scenario !== "healthy" && managedScenario) {
+  write(path.join(root, "state", "ownership.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    resources: {
+      "pi.host": "manage",
+      "pi.host-links": "manage",
+      "herdr.pi-integration": "generate",
+      ...Object.fromEntries([...peers, "pi-subagents"].map((name) => [`npm:${name}`, "manage"])),
+    },
+  }, null, 2)}\n`, 0o600);
 }
 
 if (scenario === "bundle") {
@@ -239,15 +255,73 @@ if (scenario === "bundle") {
     resources: { "npm:pi-subagents": { source: { type: "npm", spec: "^0.84.0" }, update: "compatible" } },
     override: ["npm:pi-subagents"],
   }, null, 2)}\n`);
-  write(path.join(root, "state", "ownership.json"), `${JSON.stringify({
+}
+
+if (scenario === "release") {
+  const manifestFile = path.join(npmDir, "package.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  manifest.dependencies["pi-subagents"] = "0.84.0";
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+  write(path.join(root, "layers", "team-release.json"), `${JSON.stringify({
     schemaVersion: 1,
+    kind: "agentbrew-release",
+    layer: "team",
+    release: "sandbox-team-1",
+    host: { compatible: ">=1.5.0 <2.0.0" },
     resources: {
-      "pi.host": "manage",
-      "pi.host-links": "manage",
-      "herdr.pi-integration": "generate",
-      ...Object.fromEntries([...peers, "pi-subagents"].map((name) => [`npm:${name}`, "manage"])),
+      "npm:pi-subagents": {
+        source: { type: "npm", spec: "0.84.0", integrity: `sha512-${Buffer.alloc(64, 12).toString("base64")}` },
+        update: "fixed",
+      },
     },
-  }, null, 2)}\n`, 0o600);
+    required: ["npm:pi-subagents"],
+  }, null, 2)}\n`);
+  const registered = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "source", "set", "--layer", `team=${path.join(root, "layers", "team-release.json")}`], { env, encoding: "utf8" });
+  if (registered.status !== 0) throw new Error(`cannot register the sandbox Release: ${registered.stderr || registered.stdout}`);
+}
+
+if (scenario === "git") {
+  const work = path.join(root, "git-work");
+  const remote = path.join(root, "git-remote.git");
+  fs.mkdirSync(work, { recursive: true });
+  const git = (cwd, args) => {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_AUTHOR_NAME: "Agentbrew Sandbox",
+        GIT_AUTHOR_EMAIL: "sandbox@example.invalid",
+        GIT_COMMITTER_NAME: "Agentbrew Sandbox",
+        GIT_COMMITTER_EMAIL: "sandbox@example.invalid",
+      },
+    });
+    if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+  };
+  git(work, ["init", "--initial-branch=main"]);
+  write(path.join(work, "team.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "agentbrew-layer",
+    layer: "team",
+    resources: { "npm:pi-subagents": { source: { type: "npm", spec: "^0.83.0" }, update: "compatible" } },
+  }, null, 2)}\n`);
+  git(work, ["add", "team.json"]);
+  git(work, ["commit", "-m", "sandbox team layer"]);
+  git(root, ["clone", "--bare", work, remote]);
+  const registered = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "source", "set", "--git", `team=${remote}#team.json`], { env, encoding: "utf8" });
+  if (registered.status !== 0) throw new Error(`cannot register the sandbox Git source: ${registered.stderr || registered.stdout}`);
+}
+
+if (scenario === "artifact-failure") {
+  write(path.join(root, "layers", "personal.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "agentbrew-layer",
+    layer: "personal",
+    resources: { "npm:pi-subagents": { source: { type: "npm", spec: "^0.83.0" }, update: "compatible" } },
+  }, null, 2)}\n`);
+  const registered = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "source", "set", "--layer", `personal=${path.join(root, "layers", "personal.json")}`], { env, encoding: "utf8" });
+  if (registered.status !== 0) throw new Error(`cannot register the artifact-failure layer: ${registered.stderr || registered.stdout}`);
 }
 
 console.log(root);

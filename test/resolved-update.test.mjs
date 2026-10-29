@@ -40,6 +40,7 @@ function layer(f, spec = "^0.83.0", update = "compatible") {
 async function prepare(t, options = {}) {
   const f = fixture(t, { realNpm: options.realNpm === true });
   f.setHost("1.5.0");
+  fs.rmSync(path.join(f.agentDir, "install", "releases", "1.5.0"), { recursive: true, force: true });
   install(f, options.current ?? "0.83.0", options.peers);
   const manifestFile = path.join(f.npmDir, "package.json");
   const manifest = readJson(manifestFile);
@@ -246,6 +247,7 @@ test("metadata errors and incomplete Bundle coverage stop before host execution"
 test("source changes during metadata resolution invalidate the plan inside the lock", async (t) => {
   const f = fixture(t);
   f.setHost("1.5.0");
+  fs.rmSync(path.join(f.agentDir, "install", "releases", "1.5.0"), { recursive: true, force: true });
   install(f);
   manage(f);
   const source = layer(f);
@@ -282,17 +284,10 @@ test("new target host dependencies are derived and superseded declarations are r
   const added = "@earendil-works/pi-codemode";
   const removed = "@earendil-works/pi-mcp";
   const names = [...PEERS.filter((name) => name !== removed), added];
-  const { f, args, metadata } = await prepare(t, { metadata: { hostDependencies: Object.fromEntries(names.map((name) => [name, "1.5.0"])) } });
+  const hostDependencies = Object.fromEntries(names.map((name) => [name, "1.5.0"]));
+  const { f, args, metadata } = await prepare(t, { metadata: { hostDependencies } });
   const scope = path.join(f.agentDir, "install", "releases", "1.5.0", "node_modules", "@earendil-works");
-  const hostFile = path.join(scope, path.basename(HOST_PACKAGE), "package.json");
-  const host = readJson(hostFile);
-  delete host.dependencies[removed];
-  host.dependencies[added] = "1.5.0";
-  fs.writeFileSync(hostFile, JSON.stringify(host));
-  fs.rmSync(path.join(scope, path.basename(removed)), { recursive: true });
-  fs.mkdirSync(path.join(scope, path.basename(added)), { recursive: true });
-  fs.writeFileSync(path.join(scope, path.basename(added), "package.json"), JSON.stringify({ name: added, version: "1.5.0" }));
-  const result = f.run(args, metadata.env);
+  const result = f.run(args, { ...metadata.env, MOCK_HOST_DEPENDENCIES: JSON.stringify(hostDependencies) });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const manifest = readJson(path.join(f.npmDir, "package.json"));
   assert.equal(manifest.dependencies[removed], undefined);

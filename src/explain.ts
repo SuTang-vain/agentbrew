@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Context } from "./context.js";
 import { bundleSummary, loadBundle, packageForResource, type ResolvedBundle, type ResolvedResource } from "./bundle.js";
 import { redact } from "./process.js";
+import { exceptionExplanation } from "./release.js";
 import type { CommandResult } from "./types.js";
 
 export interface ResourceExplanation {
@@ -58,9 +59,13 @@ export function explainCommand(context: Context, selected: string[]): CommandRes
     checks: [],
   };
   try {
-    const bundle = loadBundle(context.layers);
+    const bundle = loadBundle(context.layers, context);
     if (!bundle) throw new Error("explain requires at least one explicit --layer");
-    result.data = { bundle: bundleSummary(bundle), resources: explainResources(context, bundle, [...new Set(selected)]) };
+    result.data = {
+      bundle: bundleSummary(bundle),
+      resources: explainResources(context, bundle, [...new Set(selected)]),
+      exceptions: (bundle.release?.exceptions ?? []).map((entry) => exceptionExplanation(entry, context)),
+    };
   } catch (error) {
     result.status = "failed";
     result.error = redact(error instanceof Error ? error.message : String(error));

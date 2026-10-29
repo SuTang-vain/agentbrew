@@ -2,7 +2,7 @@
 
 Agentbrew is a local-first CLI for Pi/herdr configuration, selective initialization, compatibility-resolved updates, and health checks. Shared files describe resource intent; each machine keeps its own Pi host links, resolved packages, ownership, plans, and health evidence.
 
-This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2c**. It is not the complete product described in `docs/PRD.md`.
+This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2b-2 + M2c**. It is not the complete product described in `docs/PRD.md`.
 
 ## What works now
 
@@ -11,14 +11,17 @@ This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2c**. It is not 
 - Guided `init`: Observe, Adopt, Repair, Manage, and selective Fresh install.
 - Bundle `update` with target-host resolution, host-first execution, exact extension versions, locking, snapshots, and final health verification.
 - The previous native `update` for configurations without explicit or registered layers.
-- Per-target `source set/list/clear` bindings for everyday commands, with explicit-layer precedence and fail-closed validation.
+- Per-target `source set/list/refresh/clear` bindings for everyday commands, with explicit-layer precedence, fail-closed validation, and immutable Git caches.
 - Public/team/personal/machine layers with explicit whole-resource overrides, tombstones, and team required/forbidden policy.
+- Fixed team Releases with exact npm integrity, optional Pi compatibility ranges, and subject- and time-scoped team exceptions.
+- Release publication from matching update and current health evidence; runtime verification is marked `unknown` or `passed` explicitly.
+- Reviewed Pi managed-installer artifacts whose internal Pi packages are bound to registry integrity before native host update.
 - Separate `adopt` proposals, typed Bundle plans, and selective `apply`.
 - Static checks of both npm declarations and installed package versions for Bundle resources.
 - Target-host and extension resolution using the native Pi release channel, npm peer metadata, and registry integrity evidence.
 - Pi-style keyboard menus with accessible numbered fallbacks and versioned JSON output.
 
-Not implemented: fixed Bundle Releases, complete Pi host artifact verification, remote Git refresh, non-managed Pi host upgrades, SSH deployment, restore, a registry, generic herdr plugin installation, and generic skills/MCP providers. The M2a `fixed` policy is a local declaration guard, not a team Release.
+Not implemented: non-managed Pi host upgrades, SSH deployment, restore, a registry, generic herdr plugin installation, and generic skills/MCP providers. The M2a `fixed` policy remains a local declaration guard, distinct from a fixed team Release.
 
 ## Requirements
 
@@ -37,6 +40,8 @@ npm test
 npm run build
 node dist/bin/agentbrew.js --help
 ```
+
+`npm test` skips live-registry tests by default. `npm run test:e2e` enables them with `AGENTBREW_TEST_NETWORK=1` and runs the complete suite, including real public registry and Pi installer metadata checks in disposable targets; it never updates your real Pi configuration.
 
 ## Interactive workspace
 
@@ -64,7 +69,7 @@ npm install
 npm run sandbox -- --scenario bundle
 ```
 
-The sandbox supplies mock Pi/npm/herdr executables and isolated HOME/state directories. The `bundle` scenario also starts a loopback-only release/registry metadata service and pre-authorizes its disposable resources for update demonstrations; it serves metadata only, not package tarballs. Everything stops or resets when you leave or restart the sandbox. It does not use your real Pi, herdr, chezmoi, or global package configuration. Do not run repository build/test commands inside the mock shell because its `npm` is a test double.
+The sandbox supplies mock Pi/npm/herdr executables and isolated HOME/state directories. The `bundle`, `release`, `git`, and `artifact-failure` scenarios also start a loopback-only release/registry/installer metadata service and pre-authorize disposable resources for update demonstrations; it serves metadata only, not package tarballs. Everything stops or resets when you leave or restart the sandbox. It does not use your real Pi, herdr, chezmoi, or global package configuration. Do not run repository build/test commands inside the mock shell because its `npm` is a test double.
 
 Available scenarios:
 
@@ -75,6 +80,9 @@ npm run sandbox -- --scenario healthy   # healthy existing configuration
 npm run sandbox -- --scenario broken    # malformed npm manifest
 npm run sandbox -- --scenario no-host   # no usable Pi host
 npm run sandbox -- --scenario bundle    # healthy target plus three config layers
+npm run sandbox -- --scenario release   # fixed team Release and reviewed host artifacts
+npm run sandbox -- --scenario git       # registered local bare-Git source and refresh
+npm run sandbox -- --scenario artifact-failure # fail before Pi/npm/herdr execution
 ```
 
 Starting a scenario resets its disposable files. Type `exit` to leave.
@@ -140,8 +148,87 @@ agentbrew source clear
 - `inspect`, `diff`, `doctor`, `update`, `resolve`, and `explain` can use the registered inputs. A one-shot explicit `--layer` takes precedence without rewriting the binding. `init`, `adopt`, and typed-plan `apply` do not load it implicitly.
 - `source list` reports current or changed content. Missing, malformed, cross-target, or unreadable registrations fail explicitly; update never silently falls back to native bulk update when a binding is damaged.
 - A damaged binding is never deleted by `source clear`; replace it with `source set --layer …`, or remove `sources.json` by hand. The file lives in the per-target state directory: `$HOME/.local/state/agentbrew/<target-key>/sources.json`, where `<target-key>` is the first 16 hex characters of the SHA-256 of the resolved `agentDir` (`--state-dir` or `AGENTBREW_STATE_DIR` overrides the root). If that path is a directory, remove it manually.
-- Registration does not grant Manage ownership, discover the current directory, read Git credentials, or fetch repositories. `source set` and `clear` share the target operation lock with update, so a changed binding invalidates an in-flight plan.
+- Registration does not grant Manage ownership or discover the current directory. Local file registration does not read Git credentials or fetch repositories; explicit `--git` uses the target user's own Git configuration and a per-target private cache. `source set`, `refresh`, and `clear` share the target operation lock with update, so a changed binding invalidates an in-flight plan.
 - After `source clear`, or when no binding was ever registered, `update` retains the native compatibility path described below.
+
+## Git-backed sources
+
+Register a repository layer and refresh it explicitly:
+
+```bash
+agentbrew source set --git team=https://github.com/example/config.git#layers/team.json
+agentbrew source list
+agentbrew source refresh
+agentbrew update --dry-run
+agentbrew update
+```
+
+- HTTPS, SSH, and absolute local repository paths are supported. The first version tracks remote HEAD and records the full commit. HTTPS credentials, relative repositories, absolute/traversing repository paths, and non-blob inputs are rejected.
+- Each target caches content as `<layer>-<commit>.json` with mode `0600`. Refresh validates the complete Bundle before atomically replacing the binding; a failure leaves the old binding on its old complete cache.
+- Real `update` refreshes registered Git sources before resolving, in both CLI and TUI. Dry-run uses the registered commit without writing state or acquiring a lock and points to `agentbrew source refresh` in its structured data.
+- Explicit layers never refresh implicitly. `inspect`, `diff`, `doctor`, `resolve`, and `source list` use cached content. `PI_OFFLINE=1` stops before Git network access, and a failed refresh never falls back to native bulk update.
+
+## Team Releases and exceptions
+
+A Release is a team-layer input with portable fixed evidence:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "agentbrew-release",
+  "layer": "team",
+  "release": "team-2026-10",
+  "host": { "compatible": ">=1.4.0 <2.0.0" },
+  "resources": {
+    "npm:pi-subagents": {
+      "source": { "type": "npm", "spec": "0.84.0", "integrity": "sha512-<base64-digest>" },
+      "update": "fixed"
+    }
+  },
+  "required": ["npm:pi-subagents"],
+  "verification": { "runtimeLoad": "unknown" }
+}
+```
+
+Use it through the existing layer input: `agentbrew update --layer team=./team-release.json`. Release pins install the exact reviewed version when missing or different and never fall back to another version. The host range is optional and must not be exact. Compatible/manual Release resources remain supported; ordinary local fixed/manual declarations keep their previous behavior.
+
+Team exceptions permit a named user or machine to override a required resource without leaving the team baseline:
+
+```json
+{
+  "exceptions": [
+    {
+      "resource": "npm:pi-subagents",
+      "users": ["alice"],
+      "machines": ["mac-dev"],
+      "allow": "override",
+      "expiresAt": "2027-01-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+Pass `--user alice --machine mac-dev` when evaluating the Bundle. Matching subjects still need an explicit `override` in the personal or machine layer. Exceptions do not permit removal, bypass `forbidden`, grant ownership, or select versions implicitly. `explain` shows applied, expired, and subject-mismatch states.
+
+## Publishing a verified Release
+
+After a successful team-only resolved update:
+
+```bash
+agentbrew release create \
+  --layer team=./team.json \
+  --output ./team-release.json \
+  --host-range ">=1.4.0 <2.0.0" \
+  --selftest
+```
+
+Publication requires matching resolution/result evidence, current installed versions, lock integrity, and a fresh doctor. It exports only team resources as fixed pins, without personal layers, host paths, exact host versions, or machine fingerprints. The output is a new mode-`0600` file and never overwrites. Without `--selftest`, `verification.runtimeLoad` is `unknown`; it becomes `passed` only after the explicitly authorized selftest succeeds.
+
+## Pi host artifact verification
+
+Before a managed Pi host update, Agentbrew validates the target installer manifest and lock, fills missing internal Pi integrity from exact registry manifests, and checks tarball URLs. It then serves the reviewed files over a short-lived loopback endpoint so native `pi update --self` runs `npm ci --ignore-scripts` against those integrity values. `last-pi-install-plan.json` records the evidence.
+
+This binds downloaded artifacts to reviewed registry integrity; it is not a signature or runtime safety proof. An already existing target release that cannot be tied to this verified path is rejected rather than activated or deleted automatically. Artifact failures block extension and herdr steps. Dry-run does not start the installer service or write the plan.
 
 ## Read-only compatibility resolution
 
@@ -158,10 +245,10 @@ The resolver uses the same `https://pi.dev/api/latest-version` release channel a
 
 - Exact, `^`, and `~` Bundle constraints are supported. Peer checks also support `*`, comparison operators, whitespace AND, and `||`; unsupported ranges become unknown rather than compatible.
 - Independent npm packument requests are fetched with bounded concurrency (four at a time), so latency follows the slowest request rather than the sum. The host release and manifest stay sequential because they are data-dependent, and per-resource results keep their sorted order.
-- `fixed` and `manual` resources evaluate only the installed version and do not select an upgrade.
+- Ordinary local `fixed` and `manual` resources evaluate only the installed version and do not select an upgrade. Fixed Release pins instead resolve their exact reviewed version and integrity, including on a new target.
 - Missing peer metadata is never treated as proof of compatibility. A new required resource is blocked; an existing resource can remain with a warning. If the host changes while any existing resource is unknown, `ready=false` and subsequent updates must remain blocked.
 - `PI_OFFLINE=1` stops before any network request. Metadata requests use HTTPS, timeouts, and response-size limits; they do not read npm credentials, download package code, create state, or acquire locks.
-- Registry integrity is recorded as resolution evidence. During execution, Agentbrew also checks it against the staged external-package lockfile, which npm uses to verify downloaded registry artifacts. Pi host artifact verification is not complete, and installation does not prove runtime loading.
+- Registry integrity is recorded as resolution evidence. During execution, Agentbrew also checks it against the staged external-package lockfile and the reviewed Pi installer lock, which npm uses to verify downloaded registry artifacts. Installation still does not prove runtime loading.
 
 `update` with explicit layers uses this same resolver; there is no separate version-selection implementation for execution.
 
@@ -217,20 +304,20 @@ agentbrew update \
 agentbrew update --layer public="$AGENTBREW_SANDBOX/layers/public.json"
 ```
 
-Every affected resource needs explicit local Manage/Generate ownership. Declaration drift stops execution, and every managed external npm package must have an active Bundle declaration so npm cannot silently update an unplanned resource. Layers come from explicit `--layer` inputs or the per-target registration described above; automatic private-configuration discovery and remote refresh are not implemented.
+Every affected resource needs explicit local Manage/Generate ownership. Declaration drift stops execution, and every managed external npm package must have an active Bundle declaration so npm cannot silently update an unplanned resource. Layers come from explicit `--layer` inputs or the per-target registration described above. Automatic private-configuration discovery is not implemented; registered Git sources are refreshed only through `source refresh` or a real update.
 
 The resolved workflow:
 
-1. Resolve the target host and all npm resources before locking. `PI_OFFLINE=1`, metadata errors, blocked resources, or unknown compatibility during a host change stop before managed writes.
+1. Refresh registered Git sources for a real update, then resolve the target host and all npm resources before locking. Dry-run keeps the registered commit. `PI_OFFLINE=1`, metadata errors, blocked resources, or unknown compatibility during a host change stop before managed writes.
 2. Acquire the target lock and re-check source hashes, ownership, host, manifest, package-lock, and installed package manifests. Save the resolution and local snapshot before execution.
-3. If the host must change, run `pi update --self`, never `pi update --all`. Re-discover the host and require both its package version and `pi --version` to equal the plan. A failure or mismatch blocks every extension update. Cross-version updates currently require a managed Pi installation.
+3. If the host must change, validate and serve the reviewed installer artifacts, then run `pi update --self`, never `pi update --all`. Re-discover the host and require both its package version and `pi --version` to equal the plan. A failure or mismatch blocks every extension update. Cross-version updates currently require a managed Pi installation.
 4. Derive internal Pi dependencies from the actual target host, verify them against registry metadata, and repair managed `host-link`/`host-deps` links. Their exact versions never enter shared layers.
 5. Generate a complete lockfile in an isolated temporary directory. Every direct external dependency is pinned to its resolved target or retained current version, including fixed/manual resources. Restore portable semver ranges at the lockfile root, verify exact versions and registry integrity, then install using that lock with `--ignore-scripts --legacy-peer-deps`. The manifest, reviewed lockfile, every installed direct package, and host links are verified afterward.
 6. Rebuild managed herdr integration, run selftest only when explicitly enabled, and finish with doctor.
 
-`fixed` and `manual` resources keep their current version after peer compatibility is proven; they are not rejected merely because native bulk update cannot exclude them. With a stable host, an existing unknown resource may be retained, but its skipped upgrade makes the overall update partial rather than successful.
+Ordinary local `fixed` and `manual` resources keep their current version after peer compatibility is proven; fixed Release pins instead follow the exact reviewed target. With a stable host, an existing unknown resource may be retained, but its skipped upgrade makes the overall update partial rather than successful.
 
-Agentbrew deliberately does not use per-package `npm install --no-save`: real npm can advance another direct dependency and leave a stale lockfile. The staged plan is saved as `last-install-plan.json` and `last-package-lock.plan.json`, and temporary files are removed after execution. npm verifies external registry artifacts against the reviewed lock integrity; complete Pi host artifact verification, fixed Release semantics, and runtime loading remain separate checks or future work.
+Agentbrew deliberately does not use per-package `npm install --no-save`: real npm can advance another direct dependency and leave a stale lockfile. The staged plans are saved as `last-install-plan.json`, `last-package-lock.plan.json`, and `last-pi-install-plan.json` for a host update, and temporary files are removed after execution. npm verifies external and Pi registry artifacts against the reviewed lock integrity; runtime loading remains a separate explicitly authorized check.
 
 ### Native update without layers
 
@@ -314,11 +401,13 @@ The operation lock is conservative: an existing lock stops modification. After a
 - `src/bundle-plan.ts`: typed Bundle plans and source/target revalidation.
 - `src/bundle-apply.ts`: locked selective Bundle execution.
 - `src/adopt.ts`, `src/explain.ts`: read-only proposals and source explanations.
+- `src/release.ts`, `src/release-cli.ts`: Release metadata, team exceptions, and portable health-evidence publication.
 - `src/metadata.ts`, `src/resolve.ts`, `src/resolve-cli.ts`: bounded metadata access and target-host/asset resolution.
+- `src/pi-artifacts.ts`: reviewed Pi installer documents, integrity binding, and short-lived loopback serving.
 - `src/npm-spec.ts`: exact/caret/tilde and peer-range evaluation.
 - `src/init.ts`, `src/init-cli.ts`, `src/init-apply.ts`: first-use detection and selective initialization.
 - `src/plan.ts`, `src/resolved-update.ts`, `src/immutable-npm.ts`: update path selection, resolved execution, and staged npm lock plans.
-- `src/source-state.ts`, `src/sources.ts`, `src/source-cli.ts`, `src/source-context.ts`: strict per-target source registration and repeatable source preparation.
+- `src/source-state.ts`, `src/sources.ts`, `src/source-cli.ts`, `src/source-context.ts`, `src/source-git.ts`: strict per-target registration, immutable Git caches, and repeatable source preparation.
 - `src/providers/`: Pi and herdr integrations.
 - `src/terminal*.ts`, `src/result-view.ts`: terminal styling, keyboard menus, and shared result presentation.
 - `src/tui.ts`, `src/tui-view.ts`: resident read-only-by-default workspace, keyboard parsing, bounded rendering, confirmed updates, and terminal restoration.

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assertInside, isInside, type Context } from "../context.js";
-import { assertProcessSuccess, formatCommand, runProcess } from "../process.js";
+import { assertProcessSuccess, formatCommand, runProcess, runProcessAsync } from "../process.js";
 import type { ResolvedBundle } from "../bundle.js";
 import { satisfiesPeerRange } from "../npm-spec.js";
 import { sourceRegistrationFingerprint } from "../source-state.js";
@@ -439,13 +439,13 @@ export function verifyPiHost(context: Context, targetVersion: string): HostInfo 
   return host;
 }
 
-export function updatePiHostTo(context: Context, targetVersion: string): StepResult {
+export async function updatePiHostTo(context: Context, targetVersion: string, installerBase: string): Promise<StepResult> {
   const label = `Update only the Pi host to the resolved version ${targetVersion}`;
   try {
     if (resolveHost(context).source !== "managed") throw new Error("only managed Pi installations support resolved host updates");
-    const result = runProcess("pi", ["update", "--self"], {
+    const result = await runProcessAsync("pi", ["update", "--self"], {
       cwd: context.agentDir,
-      env: context.env,
+      env: { ...context.env, PI_INSTALLER_API_BASE: installerBase },
       timeout: 600_000,
     });
     assertProcessSuccess(result);
