@@ -49,6 +49,7 @@ Options:
   --plan <file>       Read the selected typed plan (apply only)
   --dry-run          Preview an update without changing resources or acquiring a lock
   --selftest         Explicitly trust and run npm run selftest (update/doctor only)
+  --write            Enable u apply in the interactive workspace (TTY only)
   --verbose          Show individual init/apply differences and checks
   --json             Print the versioned structured result; never prompts
   -h, --help         Show this help
@@ -91,6 +92,7 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
         "state-dir": { type: "string" },
         "dry-run": { type: "boolean", default: false },
         selftest: { type: "boolean", default: false },
+        write: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
         verbose: { type: "boolean", default: false },
         expect: { type: "string" },
@@ -114,20 +116,27 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
       io.output.write(HELP);
       return 0;
     }
+    if (values.write && !interactive) {
+      throw new Error("--write only enables the interactive workspace and requires a TTY");
+    }
     if (positionals.length === 0 && !interactive) {
       io.output.write(HELP);
       return 0;
     }
     const initOrExecutionOption = values.expect || values.mode || values.resource || values.apply
       || values["plan-out"] || values.output || values.plan || values["dry-run"] || values.selftest || values.verbose;
-    if (positionals.length === 0 && interactive && !values.json && !initOrExecutionOption
-      && canUseTerminalMenu({ ...io, env: io.env ?? process.env })) {
+    const useTui = positionals.length === 0 && interactive && !values.json && !initOrExecutionOption
+      && canUseTerminalMenu({ ...io, env: io.env ?? process.env });
+    if (values.write && !useTui) {
+      throw new Error("--write only enables the interactive workspace; run agentbrew --write in a TTY without a subcommand or --json");
+    }
+    if (useTui) {
       const context = createContext({
         agentDir: values["agent-dir"],
         stateDir: values["state-dir"],
         layers: values.layer,
       }, io.env ?? process.env);
-      return await runTui(context, io);
+      return await runTui(context, io, {}, { write: values.write });
     }
     const command = positionals[0] ?? "init";
     const sourceAction = positionals[1] ?? "list";

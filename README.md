@@ -49,6 +49,8 @@ Run `agentbrew` in a capable interactive terminal. It opens a foreground, full-s
 
 Use ↑/↓ and Enter to navigate, `1`–`6` to jump straight to a page, `r` to refresh, and q or Ctrl+C to exit. `?` opens Help without discarding the page behind it, and Esc returns to that page (or to Overview from a result page). While a preview is resolving, Esc aborts its metadata requests and restores the previous page with a cancellation notice. A requested exit still waits for an active read-only preview to settle; that footer also shows elapsed time, and hint text shrinks on narrow terminals instead of hiding the exit key. Re-opening a resolved preview serves the cached result with a `cached Ns ago` line until `r` refreshes it; nothing is persisted. Normal q/EOF exit returns `0`; page health does not change the workspace exit status.
 
+Applying from the workspace is opt-in: start it with `agentbrew --write` (TTY only, no subcommand). The Update preview then offers `u apply`, which opens a confirmation screen listing the host and package version changes, the herdr rebuild, and the opt-in selftest state; Cancel is selected by default. The apply re-resolves metadata before writing (the cached preview is not an authorization), runs without cancellation, reports the result, and reminds you to restart Pi when the host or extensions changed. Without `--write` the workspace never applies plans, installs packages, changes sources, runs selftest, or updates itself.
+
 Startup and ordinary refreshes perform only local read-only checks. The workspace never runs a real update, init/apply, source set/clear, selftest, Reset, or Agentbrew self-update. Use the explicit CLI commands below for those operations. Non-TTY bare invocation prints help; terminals without visual/raw-mode support retain the line-oriented init fallback. JSON and explicit subcommands never open the TUI.
 
 ## Try it without touching real configuration
@@ -296,6 +298,7 @@ Exit codes:
 - Existing non-symlink host links are never replaced; writes reject escaping directory links.
 - Plan and proposal files are newly created with private permissions.
 - Authentication files are not read or included in results; common credential forms are redacted from command errors.
+- The interactive workspace is read-only unless started with `agentbrew --write`; applying there requires the confirmation screen and re-resolves before writing.
 - A damaged source binding blocks only the commands that read it (`inspect`, `diff`, `doctor`, `update`, `resolve`, `explain`); `init`, `adopt`, and typed-plan `apply` do not load it. See "Registered source inputs" for recovery.
 - Read-only commands do not create Agentbrew state or acquire the write lock. Native tools may maintain their own caches or telemetry.
 - Agentbrew does not silently update its own executable.

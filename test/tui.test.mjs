@@ -297,6 +297,9 @@ test("update preview states readiness, re-check, and native next steps", async (
   assert.match(resolvedFrame, /preview: ready · 2 update\(s\) · no writes/);
   assert.match(resolvedFrame, /r re-check/);
   assert.doesNotMatch(resolvedFrame, /u apply/);
+  s.input.write("u");
+  await settle();
+  assert.match(currentFrame(s), /Agentbrew · Update preview/);
 
   s.input.write("\x1b");
   await new Promise((resolve) => setTimeout(resolve, 30));
@@ -307,6 +310,101 @@ test("update preview states readiness, re-check, and native next steps", async (
   assert.match(nativeFrame, /preview: local checks only · upstream versions unknown · no writes/);
   assert.match(nativeFrame, /agentbrew source set --layer personal=/);
   assert.match(nativeFrame, /agentbrew init/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
+test("--write is limited to the interactive workspace", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  assert.equal(await runCli(["--write", "update"], s.streams), 2);
+  assert.equal(await runCli(["--write", "--json"], s.streams), 2);
+  assert.equal(f.run(["--write"]).status, 2);
+});
+
+test("--write confirms before applying and reports the result", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  let updateCalls = 0;
+  let applyCalls = 0;
+  let applyDryRun;
+  const preview = {
+    schemaVersion: 1,
+    command: "update",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [
+      { id: "pi-host", label: "Update the Pi host to 1.5.0", status: "planned", changes: "none" },
+      { id: "npm-install", label: "Generate and install an exact lock plan", status: "planned", changes: "none" },
+      { id: "herdr-integration", label: "Rebuild the herdr Pi integration", status: "planned", changes: "none" },
+    ],
+    differences: [],
+    checks: [],
+    data: {
+      nativeMode: false,
+      resolution: {
+        host: { currentVersion: "1.4.0", targetVersion: "1.5.0", action: "update" },
+        resources: [{ id: "npm:pi-subagents", currentVersion: "0.83.0", targetVersion: "0.83.1", action: "update", peerEvidence: [] }],
+      },
+    },
+  };
+  const applied = {
+    schemaVersion: 1,
+    command: "update",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "observed",
+    steps: [{ id: "npm-install", label: "Install the complete exact-version npm lock plan", status: "success", changes: "observed" }],
+    differences: [],
+    checks: [],
+  };
+  const status = runTui(context, s.streams, {
+    update: async () => {
+      updateCalls += 1;
+      return preview;
+    },
+    apply: async (scoped) => {
+      applyCalls += 1;
+      applyDryRun = scoped.dryRun;
+      return applied;
+    },
+  }, { write: true });
+  await settle();
+  s.input.write("4");
+  await settle();
+  assert.match(currentFrame(s), /WRITE ENABLED/);
+  assert.match(currentFrame(s), /u apply/);
+
+  s.input.write("u");
+  await settle();
+  const confirmFrame = currentFrame(s);
+  assert.match(confirmFrame, /Agentbrew · Apply update\?/);
+  assert.match(confirmFrame, /Host\s+1\.4\.0 → 1\.5\.0/);
+  assert.match(confirmFrame, /npm\s+pi-subagents 0\.83\.0 → 0\.83\.1/);
+  assert.match(confirmFrame, /› Cancel/);
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.match(currentFrame(s), /Agentbrew · Update preview/);
+  assert.equal(applyCalls, 0);
+
+  s.input.write("u");
+  await settle();
+  s.input.write("\x1b[A");
+  await settle();
+  assert.match(currentFrame(s), /› Update now/);
+  s.input.write("\r");
+  await settle();
+  assert.equal(applyCalls, 1);
+  assert.equal(applyDryRun, false);
+  assert.match(currentFrame(s), /Agentbrew · Update result/);
+  assert.match(currentFrame(s), /Restart Pi to load the updated host and extensions\./);
+
+  s.input.write("r");
+  await settle();
+  assert.equal(updateCalls, 2);
+  assert.match(currentFrame(s), /Agentbrew · Update preview/);
   s.input.write("q");
   assert.equal(await status, 0);
 });

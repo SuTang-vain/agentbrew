@@ -10,7 +10,7 @@ import { sourceCommand } from "./source-cli.js";
 import { prepareContextSources, sourceInputError } from "./source-context.js";
 import { createTerminalStyle } from "./terminal.js";
 import type { TerminalInput, TerminalMenuIO } from "./terminal-menu.js";
-import { renderTuiFrame, TUI_MENU_ITEMS, type TuiModel, type TuiPage } from "./tui-view.js";
+import { renderTuiFrame, canApplyPreview, TUI_MENU_ITEMS, type TuiConfirmation, type TuiModel, type TuiPage } from "./tui-view.js";
 import type { CommandResult } from "./types.js";
 
 export interface TuiIO extends TerminalMenuIO {
@@ -23,6 +23,7 @@ export interface TuiOperations {
   health: (context: Context) => Promise<CommandResult>;
   changes: (context: Context) => Promise<CommandResult>;
   update: (context: Context) => Promise<CommandResult>;
+  apply: (context: Context) => Promise<CommandResult>;
   sources: (context: Context) => Promise<CommandResult>;
 }
 
@@ -37,11 +38,12 @@ async function scopedCommand(
   context: Context,
   command: "doctor" | "diff" | "update",
   operation: (scoped: Context) => CommandResult | Promise<CommandResult>,
+  options: { dryRun: boolean },
 ): Promise<CommandResult> {
   const scoped: Context = {
     ...context,
     layers: [...context.layers],
-    dryRun: command === "update",
+    dryRun: options.dryRun,
     selftest: false,
   };
   try {
@@ -103,13 +105,29 @@ const defaultOperations: TuiOperations = {
     evaluation: evaluateEnvironment(context),
     sources: sourcesResult(context),
   }),
-  health: (context) => scopedCommand(context, "doctor", doctorCommand),
-  changes: (context) => scopedCommand(context, "diff", (scoped) => bundlePlanCommand(scoped, [], undefined, undefined)),
-  update: (context) => scopedCommand(context, "update", updateCommand),
+  health: (context) => scopedCommand(context, "doctor", doctorCommand, { dryRun: false }),
+  changes: (context) => scopedCommand(context, "diff", (scoped) => bundlePlanCommand(scoped, [], undefined, undefined), { dryRun: false }),
+  update: (context) => scopedCommand(context, "update", updateCommand, { dryRun: true }),
+  apply: (context) => scopedCommand(context, "update", updateCommand, { dryRun: false }),
   sources: async (context) => sourcesResult(context),
 };
 
-export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperations> = {}): Promise<number> {
+function confirmationFrom(result: CommandResult): TuiConfirmation | null {
+  const data = result.data as any;
+  const resolution = data?.resolution;
+  if (!resolution || data?.nativeMode) return null;
+  const packages = (resolution.resources ?? [])
+    .filter((resource: any) => resource.action === "update")
+    .map((resource: any) => ({ id: String(resource.id), from: String(resource.currentVersion ?? "missing"), to: String(resource.targetVersion ?? "unknown") }));
+  const host = resolution.host?.action === "update"
+    ? { from: String(resolution.host.currentVersion), to: String(resolution.host.targetVersion) }
+    : undefined;
+  const herdr = result.steps.some((step) => step.id === "herdr-integration" && step.status === "planned");
+  if (!host && packages.length === 0) return null;
+  return { ...(host ? { host } : {}), packages, herdr };
+}
+
+export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperations> = {}, options: { write?: boolean } = {}): Promise<number> {
   const operations = { ...defaultOperations, ...overrides };
   const input = io.input;
   const output = io.output;
@@ -121,6 +139,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
     busy: false,
     exitRequested: false,
     scroll: 0,
+    writeEnabled: options.write === true,
   };
 
   return new Promise((resolve) => {
@@ -223,6 +242,17 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.scroll = 0;
       draw();
     };
+    const openConfirm = (): void => {
+      if (!model.writeEnabled || model.page !== "update" || model.busy) return;
+      if (!canApplyPreview(model.result)) return;
+      const confirmation = confirmationFrom(model.result!);
+      if (!confirmation) return;
+      model.confirm = confirmation;
+      model.confirmIndex = 1;
+      model.page = "confirm";
+      model.scroll = 0;
+      draw();
+    };
     const restore = (previous: { page: TuiPage; result?: CommandResult; evaluation?: EnvironmentEvaluation; sources?: CommandResult; scroll: number; cachedAt?: number }): void => {
       model.page = previous.page;
       model.result = previous.result;
@@ -240,7 +270,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       }
       draw();
     };
-    const activate = async (page: TuiPage, options: { refresh?: boolean } = {}): Promise<void> => {
+    const activate = async (page: TuiPage, options: { refresh?: boolean; cancellable?: boolean } = {}): Promise<void> => {
       if (page === "help") return openHelp();
       if (finished || model.busy) return;
       const cacheKey = page === "update" ? updateCacheKey(live) : null;
@@ -261,14 +291,18 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         scroll: model.scroll,
         cachedAt: model.cachedAt,
       };
-      const cancellation = new AbortController();
-      controller = cancellation;
-      live.signal = cancellation.signal;
+      const cancellation = options.cancellable === false ? undefined : new AbortController();
+      if (cancellation) {
+        controller = cancellation;
+        live.signal = cancellation.signal;
+      }
       model.page = page;
       model.scroll = 0;
       model.result = undefined;
       model.cachedAt = undefined;
-      model.notice = page === "update" ? "Resolving a dry-run; no resources will be changed…" : "Reading local state…";
+      model.notice = page === "applied"
+        ? "Applying the update; this writes to the target and cannot be cancelled…"
+        : page === "update" ? "Resolving a dry-run; no resources will be changed…" : "Reading local state…";
       model.busy = true;
       model.busySince = Date.now();
       startTicker();
@@ -284,22 +318,28 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
           model.result = await operations.changes(live);
         } else if (page === "update") {
           model.result = await operations.update(live);
+        } else if (page === "applied") {
+          model.result = await operations.apply(live);
         } else if (page === "sources") {
           model.result = await operations.sources(live);
         }
       } catch (error) {
         controller = undefined;
         live.signal = undefined;
-        if (cancellation.signal.aborted) return restore(previous);
+        if (cancellation?.signal.aborted) return restore(previous);
         finish(1, error);
         return;
       }
       controller = undefined;
       live.signal = undefined;
-      if (cancellation.signal.aborted) return restore(previous);
+      if (cancellation?.signal.aborted) return restore(previous);
       if (finished) return;
       if (page === "update" && cacheKey && model.result?.status === "success") {
         previewCache = { key: cacheKey, result: model.result, at: Date.now() };
+      }
+      if (page === "applied") {
+        previewCache = undefined;
+        model.cachedAt = undefined;
       }
       model.busy = false;
       model.busySince = undefined;
@@ -326,6 +366,13 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         return;
       }
       if (key.name === "escape") {
+        if (model.page === "confirm") {
+          model.confirm = undefined;
+          model.page = "update";
+          model.scroll = 0;
+          draw();
+          return;
+        }
         if (model.page === "help" && model.returnPage) {
           model.page = model.returnPage;
           model.returnPage = undefined;
@@ -340,6 +387,29 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         openHelp();
         return;
       }
+      if (model.page === "confirm") {
+        if (key.name === "up" || key.name === "down") {
+          model.confirmIndex = (model.confirmIndex ?? 1) === 0 ? 1 : 0;
+          draw();
+          return;
+        }
+        if (key.name === "return" || key.name === "enter") {
+          if ((model.confirmIndex ?? 1) === 0) {
+            model.confirm = undefined;
+            void activate("applied", { cancellable: false });
+          } else {
+            model.confirm = undefined;
+            model.page = "update";
+            model.scroll = 0;
+            draw();
+          }
+        }
+        return;
+      }
+      if (key.name === "u" && model.page === "update") {
+        openConfirm();
+        return;
+      }
       if (/^[1-9]$/.test(text)) {
         const direct = Number(text);
         if (direct <= TUI_MENU_ITEMS.length - 1) {
@@ -351,7 +421,8 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         }
       }
       if (key.name === "r") {
-        void activate(model.page, { refresh: true });
+        if (model.page === "applied") void activate("update", { refresh: true });
+        else void activate(model.page, { refresh: true });
         return;
       }
       if (model.page === "overview") {

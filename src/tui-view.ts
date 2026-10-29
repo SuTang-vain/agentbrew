@@ -3,7 +3,7 @@ import { renderResult } from "./result-view.js";
 import { visibleWidth, type TerminalStyle } from "./terminal.js";
 import type { CommandResult } from "./types.js";
 
-export type TuiPage = "overview" | "health" | "changes" | "update" | "sources" | "help";
+export type TuiPage = "overview" | "health" | "changes" | "update" | "sources" | "help" | "confirm" | "applied";
 
 export interface TuiMenuItem {
   id: TuiPage | "quit";
@@ -21,6 +21,12 @@ export const TUI_MENU_ITEMS: TuiMenuItem[] = [
   { id: "quit", label: "Quit", description: "Restore the terminal and leave Agentbrew" },
 ];
 
+export interface TuiConfirmation {
+  host?: { from: string; to: string };
+  packages: Array<{ id: string; from: string; to: string }>;
+  herdr: boolean;
+}
+
 export interface TuiModel {
   target: string;
   page: TuiPage;
@@ -35,11 +41,24 @@ export interface TuiModel {
   notice?: string;
   returnPage?: TuiPage;
   cachedAt?: number;
+  writeEnabled?: boolean;
+  confirm?: TuiConfirmation;
+  confirmIndex?: number;
 }
 
 export interface RenderedTuiFrame {
   lines: string[];
   scroll: number;
+}
+
+export function canApplyPreview(result?: CommandResult): boolean {
+  if (!result || result.status !== "success") return false;
+  const data = result.data as any;
+  if (data?.nativeMode) return false;
+  const resolution = data?.resolution;
+  if (!resolution) return false;
+  if (resolution.host?.action === "update") return true;
+  return (resolution.resources ?? []).some((resource: any) => resource.action === "update");
 }
 
 function paintResultLine(line: string, style: TerminalStyle): string {
@@ -127,7 +146,7 @@ const HELP_LINES = [
   "  ↑/↓     Move in the menu or scroll a result page",
   "  1–6     Jump directly to a page",
   "  Enter   Open the selected page",
-  "  r       Refresh the current page",
+  "  r       Refresh the current page, or re-check updates on a preview",
   "  Esc     Return to Overview, or to the page Help was opened from",
   "  ?       Open this help without discarding the current page",
   "  q       Quit after any active read-only operation settles",
@@ -137,15 +156,18 @@ const HELP_LINES = [
   "  agentbrew init",
   "  agentbrew update --dry-run",
   "  agentbrew update",
+  "  agentbrew --write      # enable u apply in this workspace",
   "  agentbrew source set --layer personal=/absolute/path.json",
   "  agentbrew source list",
   "  agentbrew source clear",
   "",
   "Update preview may fetch release and npm metadata; it never writes.",
+  "With --write, u asks for confirmation first: the update re-resolves,",
+  "runs without cancellation, and reports when Pi must restart.",
   "If Sources reports an error, the binding is damaged: replace it with",
   "source set, or remove <stateDir>/sources.json by hand.",
   "",
-  "This TUI never applies plans, installs packages, changes source bindings, runs selftest, or updates Agentbrew itself.",
+  "Without --write this TUI never applies plans, installs packages, changes source bindings, runs selftest, or updates Agentbrew itself.",
 ];
 
 function visibleRange(index: number, count: number, maximum: number): { start: number; end: number } {
@@ -164,28 +186,45 @@ function fitHints(hints: string[], width: number, droppable: string[]): string {
 
 function footerText(model: TuiModel, style: TerminalStyle): string {
   if (model.busy) {
-    if (model.exitRequested) return "Finishing the read-only operation before exit…";
+    const writing = model.page === "applied";
+    if (model.exitRequested) return writing ? "Finishing the update before exit…" : "Finishing the read-only operation before exit…";
     const elapsed = model.busySince ? Math.max(0, Math.floor((Date.now() - model.busySince) / 1000)) : 0;
-    return fitHints([`read-only · ${elapsed}s`, "q exits when it settles"], style.width, ["q exits when it settles"]);
+    return fitHints([`${writing ? "applying" : "read-only"} · ${elapsed}s`, "q exits when it settles"], style.width, ["q exits when it settles"]);
   }
+  if (model.page === "confirm") {
+    return fitHints(["↑/↓ select", "enter choose", "esc back", "? help", "q quit"], style.width, ["esc back", "? help"]);
+  }
+  const updateHints = model.writeEnabled && canApplyPreview(model.result)
+    ? ["↑/↓ scroll", "1-6 pages", "u apply", "r re-check", "esc back", "? help", "q quit"]
+    : ["↑/↓ scroll", "1-6 pages", "r re-check", "esc back", "? help", "q quit"];
   const hints = model.page === "overview"
     ? ["↑/↓ move", "1-6 pages", "enter open", "r refresh", "? help", "q quit"]
     : model.page === "update"
-      ? ["↑/↓ scroll", "1-6 pages", "r re-check", "esc back", "? help", "q quit"]
-      : ["↑/↓ scroll", "1-6 pages", "r refresh", "esc back", "? help", "q quit"];
+      ? updateHints
+      : model.page === "applied"
+        ? ["↑/↓ scroll", "1-6 pages", "r re-check", "esc back", "? help", "q quit"]
+        : ["↑/↓ scroll", "1-6 pages", "r refresh", "esc back", "? help", "q quit"];
   const droppable = model.page === "overview"
     ? ["r refresh", "enter open", "1-6 pages"]
     : model.page === "update"
       ? ["r re-check", "esc back", "1-6 pages"]
-      : ["r refresh", "esc back", "1-6 pages"];
+      : model.page === "applied"
+        ? ["r re-check", "esc back", "1-6 pages"]
+        : ["r refresh", "esc back", "1-6 pages"];
   return fitHints(hints, style.width, droppable);
 }
 
 export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: number): RenderedTuiFrame {
   const item = TUI_MENU_ITEMS[model.menuIndex] ?? TUI_MENU_ITEMS[0]!;
-  const title = model.page === "overview" ? "Agentbrew" : `Agentbrew · ${TUI_MENU_ITEMS.find((entry) => entry.id === model.page)?.label ?? model.page}`;
+  const pageTitle = model.page === "confirm"
+    ? "Apply update?"
+    : model.page === "applied"
+      ? "Update result"
+      : TUI_MENU_ITEMS.find((entry) => entry.id === model.page)?.label;
+  const title = model.page === "overview" ? "Agentbrew" : `Agentbrew · ${pageTitle ?? model.page}`;
+  const modeTag = model.writeEnabled ? style.paint("WRITE ENABLED", "warning") : style.paint("READ ONLY", "accent");
   const header = [
-    `${style.title(title)}  ${style.paint("READ ONLY", "accent")}`,
+    `${style.title(title)}  ${modeTag}`,
     style.paint(style.truncateMiddle(`Target  ${model.target}`, style.width), "muted"),
     style.rule(),
   ];
@@ -212,6 +251,25 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
       body.push(style.paint(`  ${start + 1}–${end}/${TUI_MENU_ITEMS.length} pages`, "muted"));
     }
     if (body.length < bodyHeight && item.description) body.push(style.paint(`  ${item.description}`, "muted"));
+  } else if (model.page === "confirm") {
+    const confirm = model.confirm;
+    const index = model.confirmIndex ?? 1;
+    if (!confirm) {
+      body = [style.paint("nothing to apply", "muted")];
+    } else {
+      body = [
+        style.paint(`This writes to ${model.target} and cannot be rolled back automatically.`, "warning"),
+        "The update re-resolves metadata before changing anything.",
+        "",
+        ...(confirm.host ? [`  Host       ${confirm.host.from} → ${confirm.host.to}`] : []),
+        ...confirm.packages.map((pkg) => `  npm        ${pkg.id.slice(4)} ${pkg.from} → ${pkg.to}`),
+        ...(confirm.herdr ? ["  herdr      rebuild the Pi integration"] : []),
+        "  selftest   not run (opt-in)",
+        "",
+        `${index === 0 ? "›" : " "} Update now`,
+        `${index === 1 ? "›" : " "} Cancel`,
+      ];
+    }
   } else if (model.page === "help") {
     body = HELP_LINES.flatMap((line) => style.wrap(line));
   } else if (model.busy || !model.result) {
@@ -221,6 +279,10 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     body = wrappedResult(model.result, style, preview ? previewSummary(model.result) : undefined);
     if (preview && (model.result.data as any)?.nativeMode) {
       body = [...nativeGuidance(style), "", ...body];
+    }
+    if (model.page === "applied"
+      && model.result.steps.some((step) => step.status === "success" && ["pi-host", "pi-update", "npm-install"].includes(step.id))) {
+      body = [style.paint("Restart Pi to load the updated host and extensions.", "warning"), "", ...body];
     }
     if (model.cachedAt) {
       const age = Math.max(0, Math.floor((Date.now() - model.cachedAt) / 1000));
