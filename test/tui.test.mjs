@@ -116,7 +116,7 @@ test("Health, Differences, native Update preview, Sources, refresh, and Escape s
   await settle();
   assert.match(currentFrame(s), /Agentbrew · Update preview/);
   assert.match(currentFrame(s), /PLAN Update Pi and configured extensions/);
-  assert.match(currentFrame(s), /result: success; changes: none/);
+  assert.match(currentFrame(s), /preview: local checks only/);
   assert.equal(fs.existsSync(f.stateDir), false);
 
   s.input.write("r");
@@ -198,7 +198,7 @@ test("Help returns to the cached page, digits jump directly, and previews report
   assert.match(currentFrame(s), /resolving npm:probe \(1\/1\)/);
   release({ schemaVersion: 1, command: "update", status: "success", target: { agentDir: f.agentDir }, changes: "none", steps: [], differences: [], checks: [] });
   await settle();
-  assert.match(currentFrame(s), /result: success; changes: none/);
+  assert.match(currentFrame(s), /preview: up to date · no writes/);
   s.input.write("q");
   assert.equal(await status, 0);
 });
@@ -250,6 +250,63 @@ test("Esc cancels an in-flight preview and restores the previous page", async (t
   assert.equal(updateCalls, 1);
   assert.equal(healthCalls, 1);
   assert.equal(fs.existsSync(f.stateDir), false);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
+test("update preview states readiness, re-check, and native next steps", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  let call = 0;
+  const resolvedPreview = {
+    schemaVersion: 1,
+    command: "update",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [{ id: "pi-host", label: "Update the Pi host to 1.5.0", status: "planned", changes: "none" }],
+    differences: [],
+    checks: [],
+    data: {
+      nativeMode: false,
+      resolution: {
+        host: { currentVersion: "1.4.0", targetVersion: "1.5.0", action: "update" },
+        resources: [{ id: "npm:pi-subagents", currentVersion: "0.83.0", targetVersion: "0.83.1", action: "update", peerEvidence: [] }],
+      },
+    },
+  };
+  const nativePreview = {
+    schemaVersion: 1,
+    command: "update",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [{ id: "pi-update", label: "Update Pi and configured extensions", status: "planned", changes: "none" }],
+    differences: [],
+    checks: [],
+    data: { nativeMode: true },
+  };
+  const status = runTui(context, s.streams, {
+    update: async () => (call++ === 0 ? resolvedPreview : nativePreview),
+  });
+  await settle();
+  s.input.write("4");
+  await settle();
+  const resolvedFrame = currentFrame(s);
+  assert.match(resolvedFrame, /preview: ready · 2 update\(s\) · no writes/);
+  assert.match(resolvedFrame, /r re-check/);
+  assert.doesNotMatch(resolvedFrame, /u apply/);
+
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await settle();
+  s.input.write("4");
+  await settle();
+  const nativeFrame = currentFrame(s);
+  assert.match(nativeFrame, /preview: local checks only · upstream versions unknown · no writes/);
+  assert.match(nativeFrame, /agentbrew source set --layer personal=/);
+  assert.match(nativeFrame, /agentbrew init/);
   s.input.write("q");
   assert.equal(await status, 0);
 });
@@ -320,7 +377,7 @@ test("a damaged registered binding fails update preview closed without native fa
   await settle();
   const frame = currentFrame(s);
   assert.match(frame, /sources: registered/);
-  assert.match(frame, /result: not-executed; changes: none/);
+  assert.match(frame, /preview: not-executed · no writes/);
   assert.doesNotMatch(frame, /PLAN Update Pi/);
   s.input.write("q");
   assert.equal(await status, 0);

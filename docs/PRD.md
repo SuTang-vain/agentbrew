@@ -574,7 +574,7 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 
 ### M2c：常驻只读工作台（已实现）
 
-裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Differences、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。Help 是非破坏性覆盖层：Esc 返回原页面并复用缓存结果；数字键直达页面；窗口化菜单显示位置指示；元数据预览按请求显示进度与已用时间；Esc 可中止在途预览并恢复原页面。会话内缓存最近一次成功的预览并显示其年龄，`r` 强制重新解析；缓存不落盘，其键包含 layer 哈希、本机指纹与 ownership，任一变化即失效。
+裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Differences、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。Help 是非破坏性覆盖层：Esc 返回原页面并复用缓存结果；数字键直达页面；窗口化菜单显示位置指示；元数据预览按请求显示进度与已用时间；Esc 可中止在途预览并恢复原页面。会话内缓存最近一次成功的预览并显示其年龄，`r` 强制重新解析；缓存不落盘，其键包含 layer 哈希、本机指纹与 ownership，任一变化即失效。预览页必须明确区分 ready/up-to-date 与 update 计数，`r` 在任何预览页均为 re-check；无注册来源时必须解释如何获得可解析计划，而不是仅展示 native 步骤模板。
 
 ### M3：管理员 SSH 多用户交付
 

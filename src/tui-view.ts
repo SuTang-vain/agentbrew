@@ -53,11 +53,14 @@ function paintResultLine(line: string, style: TerminalStyle): string {
     const tone = line.includes("success") ? "success" : line.includes("cancelled") || line.includes("not-executed") ? "warning" : "error";
     return style.paint(truncated, tone);
   }
+  if (line.startsWith("preview:")) {
+    const tone = line.includes("up to date") || line.includes("ready") ? "success" : "warning";
+    return style.paint(truncated, tone);
+  }
   return truncated;
 }
 
-function wrappedResult(result: CommandResult, style: TerminalStyle): string[] {
-  const summary = `result: ${result.status}; changes: ${result.changes}`;
+function wrappedResult(result: CommandResult, style: TerminalStyle, summary = `result: ${result.status}; changes: ${result.changes}`): string[] {
   const details = renderResult(result, true)
     .split("\n")
     .filter((line) => !line.startsWith("result:") && !line.startsWith("target:"));
@@ -65,6 +68,29 @@ function wrappedResult(result: CommandResult, style: TerminalStyle): string[] {
     const wrapped = style.wrap(line);
     return wrapped.map((part, index) => paintResultLine(index === 0 ? part : `  ${part}`, style));
   });
+}
+
+function previewSummary(result: CommandResult): string {
+  const data = result.data as any;
+  if (data?.nativeMode) return "preview: local checks only · upstream versions unknown · no writes";
+  if (result.status !== "success") return `preview: ${result.status} · no writes`;
+  const resolution = data?.resolution;
+  const updates = (resolution?.host?.action === "update" ? 1 : 0)
+    + (resolution?.resources ?? []).filter((resource: any) => resource.action === "update").length;
+  return updates > 0
+    ? `preview: ready · ${updates} update(s) · no writes`
+    : "preview: up to date · no writes";
+}
+
+function nativeGuidance(style: TerminalStyle): string[] {
+  return [
+    style.paint("This target has no registered sources, so upstream versions cannot be resolved.", "warning"),
+    "Register the layers this machine uses:",
+    "  agentbrew source set --layer personal=/absolute/personal.json",
+    "Or take ownership of existing resources first:",
+    "  agentbrew init",
+    "Native shortcut without version prediction: agentbrew update",
+  ];
 }
 
 function overviewSummary(model: TuiModel, style: TerminalStyle): string[] {
@@ -144,8 +170,15 @@ function footerText(model: TuiModel, style: TerminalStyle): string {
   }
   const hints = model.page === "overview"
     ? ["↑/↓ move", "1-6 pages", "enter open", "r refresh", "? help", "q quit"]
-    : ["↑/↓ scroll", "1-6 pages", "r refresh", "esc back", "? help", "q quit"];
-  return fitHints(hints, style.width, model.page === "overview" ? ["r refresh", "enter open", "1-6 pages"] : ["r refresh", "esc back", "1-6 pages"]);
+    : model.page === "update"
+      ? ["↑/↓ scroll", "1-6 pages", "r re-check", "esc back", "? help", "q quit"]
+      : ["↑/↓ scroll", "1-6 pages", "r refresh", "esc back", "? help", "q quit"];
+  const droppable = model.page === "overview"
+    ? ["r refresh", "enter open", "1-6 pages"]
+    : model.page === "update"
+      ? ["r re-check", "esc back", "1-6 pages"]
+      : ["r refresh", "esc back", "1-6 pages"];
+  return fitHints(hints, style.width, droppable);
 }
 
 export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: number): RenderedTuiFrame {
@@ -184,10 +217,14 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
   } else if (model.busy || !model.result) {
     body = [style.paint(model.notice ?? "Loading read-only result…", "muted")];
   } else {
-    body = wrappedResult(model.result, style);
+    const preview = model.page === "update";
+    body = wrappedResult(model.result, style, preview ? previewSummary(model.result) : undefined);
+    if (preview && (model.result.data as any)?.nativeMode) {
+      body = [...nativeGuidance(style), "", ...body];
+    }
     if (model.cachedAt) {
       const age = Math.max(0, Math.floor((Date.now() - model.cachedAt) / 1000));
-      body = [style.paint(`cached ${age}s ago · r refreshes`, "muted"), ...body];
+      body = [style.paint(`cached ${age}s ago · ${preview ? "r re-checks" : "r refreshes"}`, "muted"), ...body];
     }
     if (!model.busy && model.notice) body = [style.paint(model.notice, "warning"), ...body];
   }
