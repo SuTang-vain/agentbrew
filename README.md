@@ -6,7 +6,7 @@ This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2c**. It is not 
 
 ## What works now
 
-- A resident read-only TUI opened by bare `agentbrew`, with Overview, Health, Changes, Update preview, Sources, and Help pages.
+- A resident, read-only-by-default TUI opened by bare `agentbrew`, with Overview, Health, Differences, Update preview, Sources, and Help pages; `agentbrew --write` explicitly enables confirmed resolved Bundle updates.
 - Read-only `inspect`, `diff`, `doctor`, `explain`, and `resolve`.
 - Guided `init`: Observe, Adopt, Repair, Manage, and selective Fresh install.
 - Bundle `update` with target-host resolution, host-first execution, exact extension versions, locking, snapshots, and final health verification.
@@ -40,18 +40,20 @@ node dist/bin/agentbrew.js --help
 
 ## Interactive workspace
 
-Run `agentbrew` in a capable interactive terminal. It opens a foreground, full-screen workspace rather than a daemon:
+Run `agentbrew` in a capable interactive terminal. It opens a foreground, full-screen workspace rather than a daemon. The workspace is read-only by default:
 
 - **Overview** summarizes the local target, Pi/herdr, health, differences, and active sources.
 - **Health** and **Differences** reuse doctor and diff without repairing anything.
 - **Update preview** uses the same update path with `dryRun=true`; opening it may fetch release/npm metadata for a Bundle and reports each request while it resolves, but never acquires the write lock or installs anything. The page states `preview: ready · N update(s) · no writes` (or `up to date`), labels `r` as re-check, and without registered sources explains how to obtain a resolved plan. The last successful preview is cached for the session and shows its age; `r` forces a fresh resolution.
-- **Sources** explains explicit or registered layers. **Help** lists the explicit CLI commands for writes.
+- **Sources** explains explicit or registered layers. **Help** lists keyboard controls and explicit commands for other write operations.
 
-Use ↑/↓ and Enter to navigate, `1`–`6` to jump straight to a page, `r` to refresh, and q or Ctrl+C to exit. `?` opens Help without discarding the page behind it, and Esc returns to that page (or to Overview from a result page). While a preview is resolving, Esc aborts its metadata requests and restores the previous page with a cancellation notice. A requested exit still waits for an active read-only preview to settle; that footer also shows elapsed time, and hint text shrinks on narrow terminals instead of hiding the exit key. Re-opening a resolved preview serves the cached result with a `cached Ns ago` line until `r` refreshes it; nothing is persisted. Normal q/EOF exit returns `0`; page health does not change the workspace exit status.
+Use ↑/↓ and Enter to navigate, `1`–`6` to jump straight to a page, `r` to refresh, and q or Ctrl+C to exit. `?` opens Help without discarding the page behind it, and Esc returns to that page (or to Overview from a result page). While a preview is resolving, Esc aborts its metadata requests and restores the previous page with a cancellation notice. A requested exit still waits for an active read-only preview to settle; that footer also shows elapsed time, and hint text shrinks on narrow terminals instead of hiding the exit key. Re-opening a resolved preview serves the cached result with a `cached Ns ago` line until `r` refreshes it; nothing is persisted. Normal q/EOF exit returns `0`; page health or update results do not change the workspace exit status, so automation must use the explicit structured commands instead.
 
-Applying from the workspace is opt-in: start it with `agentbrew --write` (TTY only, no subcommand). The Update preview then offers `u apply`, which opens a confirmation screen listing the host and package version changes, the herdr rebuild, and the opt-in selftest state; Cancel is selected by default. The apply re-resolves metadata before writing (the cached preview is not an authorization), runs without cancellation, reports the result, and reminds you to restart Pi when the host or extensions changed. Without `--write` the workspace never applies plans, installs packages, changes sources, runs selftest, or updates itself.
+Applying from the workspace is opt-in: start it with `agentbrew --write` in a capable TTY, without a subcommand, JSON, or another execution option. Only a successful resolved Bundle preview containing a Pi host or external npm package version update offers `u apply`. Native, failed, blocked, up-to-date, and repairs-only previews cannot be applied from the TUI; use the explicit CLI commands for those cases.
 
-Startup and ordinary refreshes perform only local read-only checks. The workspace never runs a real update, init/apply, source set/clear, selftest, Reset, or Agentbrew self-update. Use the explicit CLI commands below for those operations. Non-TTY bare invocation prints help; terminals without visual/raw-mode support retain the line-oriented init fallback. JSON and explicit subcommands never open the TUI.
+The `u apply` confirmation screen lists host and package version changes, any planned herdr rebuild, and the facts that selftest is not run and rollback is not automatic. Cancel is selected by default; Cancel or Esc writes nothing. After confirmation, the update re-resolves metadata and revalidates current sources and local state before writing—the cached preview is not an authorization. The write cannot be cancelled, and an exit request waits for it to settle. The result page reports the actual outcome and reminds you to restart Pi when the host or extensions changed.
+
+Startup and ordinary refreshes perform only local read-only checks, even with `--write`. Without `--write`, the workspace has no executable write action and never runs a real update, init, typed-plan apply, source set/clear, selftest, Reset, or Agentbrew self-update. With `--write`, only the confirmed resolved Bundle update described above can write; all other supported operations remain explicit CLI commands. Non-TTY bare invocation prints help, while non-TTY `--write` is a usage error. Terminals without visual/raw-mode support retain the line-oriented init fallback for ordinary bare invocation; JSON and explicit subcommands never open the TUI.
 
 ## Try it without touching real configuration
 
@@ -298,7 +300,7 @@ Exit codes:
 - Existing non-symlink host links are never replaced; writes reject escaping directory links.
 - Plan and proposal files are newly created with private permissions.
 - Authentication files are not read or included in results; common credential forms are redacted from command errors.
-- The interactive workspace is read-only unless started with `agentbrew --write`; applying there requires the confirmation screen and re-resolves before writing.
+- The interactive workspace is read-only by default. `agentbrew --write` enables only confirmed resolved Bundle updates; applying requires the confirmation screen and re-resolves before writing. It does not enable selftest, source changes, or other write operations.
 - A damaged source binding blocks only the commands that read it (`inspect`, `diff`, `doctor`, `update`, `resolve`, `explain`); `init`, `adopt`, and typed-plan `apply` do not load it. See "Registered source inputs" for recovery.
 - Read-only commands do not create Agentbrew state or acquire the write lock. Native tools may maintain their own caches or telemetry.
 - Agentbrew does not silently update its own executable.
@@ -319,7 +321,7 @@ The operation lock is conservative: an existing lock stops modification. After a
 - `src/source-state.ts`, `src/sources.ts`, `src/source-cli.ts`, `src/source-context.ts`: strict per-target source registration and repeatable source preparation.
 - `src/providers/`: Pi and herdr integrations.
 - `src/terminal*.ts`, `src/result-view.ts`: terminal styling, keyboard menus, and shared result presentation.
-- `src/tui.ts`, `src/tui-view.ts`: resident read-only workspace, keyboard parsing, bounded rendering, and terminal restoration.
+- `src/tui.ts`, `src/tui-view.ts`: resident read-only-by-default workspace, keyboard parsing, bounded rendering, confirmed updates, and terminal restoration.
 - `test/`: isolated provider/CLI/Bundle/interaction tests, including exact npm updates and loopback metadata.
 - `scripts/sandbox.*`: disposable mock environments and their loopback metadata service.
 
