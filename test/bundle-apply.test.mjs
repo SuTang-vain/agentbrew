@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fixture, PEERS, readJson } from "./helpers.mjs";
+import { metadataServer } from "./metadata-server.mjs";
 
 function layer(f, value, kind = "personal") {
   const file = path.join(f.root, `${kind}.json`);
@@ -162,7 +163,7 @@ test("npm failure is partial and does not grant ownership or leave a lock", (t) 
   assert.equal(readJson(path.join(f.stateDir, "last-result.json")).status, "partial");
 });
 
-test("fixed/manual resources block native bulk update, while compatible resources can update", (t) => {
+test("fixed/manual resources are retained while compatible resources use exact resolved updates", async (t) => {
   for (const policy of ["fixed", "manual"]) {
     const f = fixture(t);
     healthy(f);
@@ -171,19 +172,24 @@ test("fixed/manual resources block native bulk update, while compatible resource
     fs.writeFileSync(manifestFile(f), JSON.stringify(manifest));
     manageAll(f);
     const source = layer(f, { resources: { "npm:pi-subagents": npm("0.83.0", policy) } });
-    const result = f.run(["update", "--layer", source, "--json"]);
-    assert.equal(result.status, 6, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout).data.policyBlockers, ["npm:pi-subagents"]);
+    const metadata = await metadataServer(t);
+    const result = f.run(["update", "--layer", source, "--json"], metadata.env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).data.resolution.resources[0].action, "keep");
     assert.equal(f.commands().includes("pi update --all"), false);
+    assert.equal(f.commands().some((line) => line.startsWith("npm install")), false);
   }
   const f = fixture(t);
   healthy(f);
   manageAll(f);
-  f.setHost("1.6.0");
   const source = layer(f, { resources: { "npm:pi-subagents": npm("^0.83.0") } });
-  const updated = f.run(["update", "--layer", source, "--json"], { MOCK_NEXT_VERSION: "1.6.0" });
+  const metadata = await metadataServer(t);
+  const updated = f.run(["update", "--layer", source, "--json"], metadata.env);
   assert.equal(updated.status, 0, updated.stderr);
-  assert.equal(f.commands().includes("pi update --all"), true);
+  assert.equal(f.commands().includes("pi update --all"), false);
+  assert.equal(f.commands().includes("npm install --package-lock-only --ignore-scripts --legacy-peer-deps"), true);
+  assert.equal(f.commands().includes("npm install --ignore-scripts --legacy-peer-deps"), true);
+  assert.equal(f.commands().some((command) => command.includes("--no-save")), false);
 });
 
 test("Bundle update stops on drift or absent local ownership before native execution", (t) => {

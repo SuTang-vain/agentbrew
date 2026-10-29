@@ -39,6 +39,31 @@ export XDG_STATE_HOME="$AGENTBREW_SANDBOX/xdg-state"
 export PATH="$AGENTBREW_SANDBOX/bin:$PATH"
 export PS1="(agentbrew-sandbox) \u@\h:\w\\$ "
 
+METADATA_PID=""
+if [[ "$SCENARIO" == bundle ]]; then
+  node "$REPO_ROOT/scripts/sandbox-metadata.mjs" --ready "$AGENTBREW_SANDBOX/metadata.json" &
+  METADATA_PID=$!
+  for _ in {1..50}; do
+    [[ -f "$AGENTBREW_SANDBOX/metadata.json" ]] && break
+    if ! kill -0 "$METADATA_PID" 2>/dev/null; then
+      echo "sandbox metadata service stopped before becoming ready" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  [[ -f "$AGENTBREW_SANDBOX/metadata.json" ]] || { echo "sandbox metadata service did not become ready" >&2; exit 1; }
+  METADATA_ORIGIN=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).origin)' "$AGENTBREW_SANDBOX/metadata.json")
+  export AGENTBREW_PI_RELEASE_URL="$METADATA_ORIGIN/release"
+  export AGENTBREW_NPM_REGISTRY_URL="$METADATA_ORIGIN/registry"
+fi
+cleanup() {
+  if [[ -n "$METADATA_PID" ]]; then
+    kill "$METADATA_PID" 2>/dev/null || true
+    wait "$METADATA_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
 cat <<EOF
 Agentbrew sandbox ready ($SCENARIO). This shell uses only mock Pi/npm/herdr commands.
 Your real configuration is not used.
@@ -68,7 +93,17 @@ EOF
 if [[ "$SCENARIO" == bundle ]]; then
   cat <<'EOF'
 
-Bundle scenario:
+Bundle scenario (with a loopback-only metadata service):
+  agentbrew source set --layer public="$AGENTBREW_SANDBOX/layers/public.json"
+  agentbrew source list
+  agentbrew resolve
+  agentbrew update --dry-run
+  agentbrew update
+  agentbrew diff
+  agentbrew doctor
+  agentbrew source clear
+
+Layer explanation and selective personal-layer apply:
   agentbrew explain --layer public="$AGENTBREW_SANDBOX/layers/public.json" \
     --layer team="$AGENTBREW_SANDBOX/layers/team.json" \
     --layer personal="$AGENTBREW_SANDBOX/layers/personal.json"
@@ -82,4 +117,4 @@ EOF
 fi
 
 cd "$HOME"
-exec bash --noprofile --norc -i
+bash --noprofile --norc -i

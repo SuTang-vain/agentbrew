@@ -1,11 +1,11 @@
 # Agentbrew 产品需求文档
 
-- 文档状态：Draft v0.6
+- 文档状态：Draft v0.10
 - 文档目的：定义产品方向、首版需求、执行语义与验收边界
 - 适用阶段：M1a–M3 的设计、开发与评审
 - 实现语言：TypeScript + Node.js
-- 实现状态：M1a、M1b、M2a 已实现；M2b 及后续能力仍为设计目标
-- 尚未冻结：Bundle Release schema、Provider 通用接口字段；M2a 本地 layer schema v1 已冻结
+- 实现状态：M1a、M1b、M2a、M2b-0、M2b-1 及 M2c 已实现；M2b-2 及后续里程碑仍为设计目标
+- 尚未冻结：Bundle Release schema、Provider 通用接口字段；M2a 本地 layer schema v1 与 source registration schema v1 已冻结
 
 本文使用“必须”“应”“可”三个要求级别：“必须”表示验收阻塞项，“应”表示无充分理由不得偏离的要求，“可”表示按场景启用的能力。
 
@@ -272,6 +272,21 @@ Agentbrew 首先是 Pi/herdr 环境调节与健康控制面，后续依据真实
 - 非交互模式必须显式提供配置分类和资源清单；单一 `--yes` 不得替代资源选择、代码信任或权限授权。
 - 用户取消或仅选择观察时，结果必须明确为未修改，不得生成最小结构或触发更新。
 
+### FR-08a：常驻只读交互工作台（P0）
+
+- 无子命令、没有 JSON/init/执行选项且终端支持 raw mode 时，`agentbrew` 必须进入前台常驻 TUI；`--agent-dir`、`--state-dir` 和 `--layer` 可以指定本次上下文。非 TTY 裸命令继续输出帮助，显式 `init` 和现有脚本调用保持不变。
+- 不支持视觉终端的交互环境使用既有 line-oriented init fallback；`NO_COLOR` 只关闭颜色，不得关闭可用 TUI。
+- TUI 是用户前台进程，不是 daemon，不得后台自更新或扩大第 9 节的权限边界。
+- 首版页面固定为 Overview、Health、Changes、Update preview、Sources 和 Help。Help 必须列出真实写操作对应的明确 CLI 命令，不得把预览描述为已经执行。
+- 首屏仅执行本地只读环境评估，展示目标、Pi/herdr、环境分类、健康与差异摘要、来源和安全边界。启动及普通刷新不得联网 resolve、写 state、获取 operation lock、执行真实更新或 selftest。
+- Health、Changes 和 Sources 必须分别复用 doctor、只读 diff 和 source list 的 CommandResult，不复制版本、健康或来源裁决。Update preview 必须使用独立的 `dryRun=true` context 调用既有 update 流程，不能把 dry-run 或 selftest 状态泄漏到其他页面。
+- 显式 layer 始终优先于注册来源；注册来源在每次 TUI 操作前重新读取和校验。绑定损坏时不得使用上一次成功内容，也不得回退原生批量更新。
+- 方向键和 Enter 用于导航，`r` 刷新、`Esc` 返回、`q`/Ctrl+C 退出。同一时刻只允许一个操作，重复按键不得重复启动；只读异步预览期间可以请求退出，但必须等待操作 settled 后清理，不宣称取消或回滚。
+- 渲染必须适应 columns/rows 变化，支持内容滚动、长路径中间截断和窄终端单列；不得依赖固定宽度或复杂鼠标操作。
+- 正常退出、输入结束、启动失败和渲染异常均必须幂等恢复 raw mode、光标和屏幕，移除本次会话监听器并输出简短关闭摘要。
+- 首版 TUI 正常退出返回 0，页面内健康状态不直接改变工作台退出码；显式子命令的结构化结果和退出语义不变。
+- 首版 TUI 不嵌入 init/apply、真实 update、selftest、source set/clear、Reset 或其他写操作；这些操作继续通过明确 CLI 子命令授权。
+
 ### FR-09：Agent 辅助规范化（P0 基础能力，P1 引导流程）
 
 P0 必须提供：
@@ -311,6 +326,7 @@ P1 可提供官方 Agent Skill 或引导流程，实现：发现配置、分类�
 |---|---|---|
 | `init` | 首次只读检测、环境分类和资源选择；确认后生成最小初始化计划并交由 apply 执行 | 默认整理已有配置、直接全量更新、Reset 或在空检测前写入 |
 | `update` | 刷新允许的来源元数据，重新解析，执行升级并验证 | 自动升级 `manual` 资源、静默提升权限或替换 Agentbrew 自身 |
+| `resolve` | 只读获取 release/npm 元数据，解析目标宿主、兼容资产版本、peer 证据和 integrity | 修改配置、获取锁、执行安装/selftest、把未知元数据当作兼容 |
 | `diff` | 使用当前 Bundle 和可用缓存比较期望与实际状态 | 修改受管资源、强制刷新所有来源或执行安装代码 |
 | `doctor` | 检查当前实际宿主、加载状态、集成和最近结果 | 修复、升级或改变配置以使其通过 |
 | `apply` | 按当前 Bundle、选定 Release、初始化选择和已有解析/缓存选择性收敛 | 主动寻找所有最新兼容版本、扩大用户选择或刷新全部上游 |
@@ -320,7 +336,7 @@ P1 可提供官方 Agent Skill 或引导流程，实现：发现配置、分类�
 | `restore` | 按 Provider 能力恢复选定快照 | 无条件降级所有资源或恢复 live session |
 | `deploy` | 在明确远程目标上执行指定操作 | 默认操作、默认全目标或复用跨用户解析计划 |
 
-无参数 `agentbrew` 只能进入与 `init` 相同的只读检测和选择流程，不得因用户未输入子命令而默认写入。
+无子命令 `agentbrew` 按 FR-08a 进入只读工作台或兼容 fallback，不得因用户未输入子命令而默认写入；显式 `agentbrew init` 继续提供选择性初始化流程。
 
 “只读”指不修改受管资源；命令可以写入明确的元数据缓存、健康报告和日志，但必须在输出或文档中区分。除 `init` 已确认的最小安装计划外，`apply` 所需缓存或不可变来源不完整时必须阻塞并要求先 `update`，不得暗中刷新。初始化所需宿主或必要来源不完整时，按 FR-08 停止，不得以 update 代替初始化。
 
@@ -520,6 +536,10 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 
 非交互 init 缺少明确分类或资源清单时必须停止，单一 --yes 不得补足这些授权。所有修改都限于所选计划，重复 init 不产生重复资源，中断不得被记录为成功。
 
+### AC-22：常驻只读工作台
+
+支持视觉终端的裸 `agentbrew` 进入可导航工作台，首屏不创建 state/lock、不联网解析、不执行更新或 selftest。用户能够查看 Health、Changes、Sources 和 Update dry-run，损坏注册来源不得回退原生更新；连续刷新和重复确认不得并发启动操作。正常退出、输入结束及终端异常均恢复终端，非 TTY、JSON 和显式子命令行为保持兼容。
+
 ## 13. 成功指标
 
 - 首次使用者能否在不阅读开发文档的情况下说明当前状态、可选动作及其副作用。
@@ -548,7 +568,13 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 ### M2：资源组合与双版本通道
 
 - **M2a 已实现**：本地公共/团队/个人/机器层、命名资源完整覆盖、删除与策略校验、漂移解释、选择性 Bundle plan/apply、结构化收养提案，以及 fixed/manual 原生更新保护。
-- **M2b 待实现**：固定 Release、来源不可变引用与上游完整性、健康快照发布、目标宿主兼容解析，以及团队例外和远程来源刷新。
+- **M2b-0 已实现**：Pi 原生 release 通道、npm 逐版本 peer/integrity 元数据、目标宿主与最新兼容资产只读解析，以及 macOS/Linux 结果验证。
+- **M2b-1 已实现**：显式或注册 Bundle 复用同一不可变解析，完成宿主先行、精确扩展安装、锁内复核、状态记录和最终 doctor；每 target 来源注册及日常命令入口已实现。
+- **M2b-2 待实现**：固定 Release、Pi 宿主等剩余制品的端到端验证、健康快照发布、团队例外和远程来源刷新。
+
+### M2c：常驻只读工作台（已实现）
+
+裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Changes、Update dry-run、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。首版不嵌入任何写操作，非 TTY、JSON 和显式子命令保持兼容。
 
 ### M3：管理员 SSH 多用户交付
 
@@ -649,8 +675,141 @@ agentbrew apply --plan ./bundle-plan.json
 - npm 使用 `--ignore-scripts --legacy-peer-deps`；Bundle apply 不更新宿主、不运行 selftest，也不顺带收敛未选资源。成功后才记录所选资源的 Manage/Generate ownership。
 - doctor 同时检查声明与已安装包 manifest；精确、`^`、`~` 范围内的实际版本必须满足约束。该静态检查不声称扩展已被运行时加载，加载仍需显式 selftest。
 
-### 17.4 原生 update 保护与未完成边界
+### 17.4 M2a 原生 update 保护与历史边界
 
-存在 Bundle 声明漂移时，普通 `update` 停止并指向选择性计划。fixed/manual 包已经安装时，由于 `pi update --all` 无法排除它们，M2a 返回 `not-executed`，不得先批量升级再声称策略成立。compatible 声明一致且本机 ownership 允许时，保留原生更新并在结束后复查健康。
+在 M2a 中，存在 Bundle 声明漂移时，普通 `update` 停止并指向选择性计划。fixed/manual 包已经安装时，由于 `pi update --all` 无法排除它们，M2a 返回 `not-executed`，不得先批量升级再声称策略成立。compatible 声明一致且本机 ownership 允许时，保留原生更新并在结束后复查健康。M2b-1 的 Bundle 执行路径已由第 19 节替代这一限制。
 
-M2a 的 `fixed` 是本机严格声明策略，不是团队固定 Release；来源文件哈希用于本机计划复核，不替代上游制品完整性或签名。M2a 尚未实现目标宿主预解析、最新兼容版本证明、远程 Git 刷新、Release 发布、通用 herdr 插件安装或 herdr 集成删除。上述能力不得以成功输出推断。
+M2a 的 `fixed` 是本机严格声明策略，不是团队固定 Release；来源文件哈希用于本机计划复核，不替代上游制品完整性或签名。远程 Git 刷新、Release 发布、通用 herdr 插件安装和 herdr 集成删除仍未实现，不得以成功输出推断。
+
+## 18. M2b-0 真实元数据解析契约
+
+### 18.1 只读命令与来源
+
+```bash
+agentbrew resolve \
+  --layer public=./public.json \
+  --resource npm:pi-subagents \
+  --verbose
+```
+
+`resolve` 至少需要一个显式 layer，`--resource` 可重复限定范围。它只读取 Pi 原生 `https://pi.dev/api/latest-version` release 通道和 npm registry JSON，不读取 npm 凭据、不下载或执行包代码、不创建 state、不获取锁，也不执行 Pi/npm/herdr 更新或 selftest。`PI_OFFLINE=1` 必须在网络访问前返回未执行。
+
+元数据客户端使用 Node 内置 fetch、HTTPS、重定向拒绝、超时和响应大小限制；测试只允许显式 loopback HTTP 或 fetch double。包名和精确版本在构造 URL 前校验，HTTP 状态和响应错误不得泄露响应秘密。
+
+### 18.2 目标宿主与资产选择
+
+1. 校验 release 的精确 semver 和包身份。release 较新时作为目标宿主；相同或较旧时保持当前宿主，不计划降级。
+2. 读取目标宿主的精确 registry manifest，提取内部 Pi 依赖和 `dist.integrity`。宿主需要更新而 manifest/integrity 不可用时必须阻塞。
+3. compatible 资源按 semver 从新到旧检查 packument，必须同时满足 Bundle 约束、所有可识别 Pi peer 约束和 integrity 要求；最新候选不兼容时可回退到较旧兼容候选。
+4. fixed/manual 只评估当前安装版本，不寻找升级版本。
+5. peer 映射使用目标宿主或其精确内部 Pi 依赖。支持的 range 包括 exact、`^`、`~`、`*`、比较运算符、空格 AND 和 `||`；x-range、连字符范围、tag、URL 及其他不理解的形式必须标为 unknown。
+
+解析输出包含 current/target version、update/keep/unknown/blocked 动作、peer 证据、integrity 和原因。metadata 兼容性是执行前的静态证据，不等于上游制品已验证、宿主绝对兼容或运行时加载成功。
+
+### 18.3 unknown、ready 与 complete
+
+- 没有 Pi peer、peer 映射缺失、range 不支持或本机包不可信时不得选择该候选。
+- 新团队必需资源遇到 unknown 必须 blocked；已有健康资源可以保持并警告。
+- 目标宿主需要变化且任一现有资源 unknown 时，`ready=false`，后续宿主更新必须保持阻塞。
+- 来源错误使解析不完整；即使没有来源错误，`ready` 仍要求没有 blocked，且宿主变化时没有 unknown。
+- `complete=false` 表示存在 unknown 或来源错误；它是完整性信号，不能单独被解释为可执行授权。
+
+只读诊断可以在 unknown 警告下成功返回；必需项、来源错误或明确不兼容导致无法形成可信结果时必须失败。普通 `update` 在 M2b-0 仍保持既有执行顺序和保护，不展示或执行这套新计划。M2b-1 必须复用同一解析结果完成宿主先行、按不可变版本执行和最终 doctor，不能另行发明版本选择逻辑。
+
+## 19. M2b-1 不可变解析执行契约
+
+### 19.1 入口与授权边界
+
+```bash
+agentbrew update --layer public=./public.json --dry-run
+agentbrew update --layer public=./public.json
+```
+
+- 带显式或注册 layer 的 `update` 必须调用第 18 节同一 `resolveConfiguration`，不得另写版本选择逻辑。dry-run 展示目标宿主、每个资源的 current/target version、update/keep/unknown 动作及后续步骤，不写 state、不获取锁、不执行 Pi/npm/herdr 更新或 selftest。
+- `PI_OFFLINE=1` 在元数据请求前返回未执行。来源错误、blocked、宿主变化伴随 unknown、非 managed 宿主的跨版本更新均在受管写入前停止。
+- Bundle 声明漂移继续指向选择性 plan/apply。所有 Bundle npm 资源必须具有本机 Manage/Generate ownership；所有本机受管外部 npm 包必须具有有效 Bundle 声明，防止 npm 顺带升级未解析资源。共享 Bundle 不提升本机 ownership。
+- 没有显式或注册 layer 的 `update` 暂时保留 M1a 原生 `pi update --all` 兼容路径，不声称获得目标宿主解析或 fixed/manual Bundle 策略保证。不得从 CWD 自动发现、拼接或加载私人配置来代替显式授权；注册入口及优先级按第 20 节执行。
+
+### 19.2 解析、锁与快照
+
+1. 在锁外完成本机预检和元数据解析，记录宿主、manifest、生成链接、package-lock 以及 Bundle 当前安装包 manifest 的稳定指纹。
+2. 获取目标排他锁后重新读取 Bundle、ownership 和指纹。任何来源或本机状态变化都必须使旧计划失效，不得在网络等待期间提前持有或释放一个名义上的写锁。
+3. 写入前保存 `last-resolution.json` 和 `last-snapshot.json`。前者包含来源哈希、稳定指纹及完整解析报告；后者包含 Pi manifest、package-lock、宿主/链接和 herdr 状态。
+4. 成功和失败均写 `last-result.json` 并释放锁。计划前提失效属于未执行；执行后的失败必须根据实际证据标记 failed/partial/unhealthy，并说明 changes 是否为 none、observed 或 unknown。
+
+### 19.3 宿主与内部依赖顺序
+
+- 仅当 `host.action === "update"` 时执行 `pi update --self`；Bundle 执行路径不得调用 `pi update --all` 或让 Pi 重新选择扩展版本。当前仅支持 managed Pi 的跨版本更新。
+- 原生命令成功后重新发现宿主，要求实际包版本等于计划版本，并要求 `pi --version` 返回同一版本。宿主命令失败、版本不符或基本执行检查失败时，所有扩展和集成写入必须停止。
+- 宿主保持不变时也验证实际版本和基本可执行性，不因 release 较旧而计划降级。
+- 从真实目标宿主派生内部 Pi 依赖集合，逐项验证真实包版本满足解析时 registry manifest 的约束，再协调本机 `file:host-link`、`file:host-deps/*` 及生成链接。新增/替换的集合与元数据不符时停止后续扩展。
+- 内部 Pi 精确版本和绝对路径只存在于本机派生状态，不得写回共享 Bundle。
+
+### 19.4 精确 npm 执行与 lockfile 语义
+
+执行前必须形成覆盖**全部本机直接外部依赖**的精确版本集合：upgrade 使用解析目标版本，keep/fixed/manual/unknown 使用已验证的当前版本。任何声明中的包缺少可保留或可安装的精确版本时，不得形成执行计划。
+
+1. 在本机 state 下的随机临时目录生成暂存 manifest，将上述直接依赖全部固定为精确版本；Pi 内部依赖继续使用指向真实目标宿主的 `file:host-link` 和 `file:host-deps/*`。暂存目录不得复用用户已有目录。
+2. 在暂存目录运行 `npm install --package-lock-only --ignore-scripts --legacy-peer-deps`，不得执行生命周期脚本。解析得到的 lockfile 必须为 lockfileVersion 3，并包含每个直接外部包的精确版本和 registry integrity；upgrade 的 integrity 必须与第 18 节解析证据一致。
+3. 将 lockfile 根声明恢复为共享 manifest 的语义化约束，并按 npm 的规范顺序序列化。保存 `last-install-plan.json` 和 `last-package-lock.plan.json`；前者记录直接资源精确版本和 lock SHA-256，后者保存完整本机安装计划。它们均不得反向改写共享 Bundle。
+4. 将复核后的 lock 写入目标 npm 目录，再运行 `npm install --ignore-scripts --legacy-peer-deps`。安装后要求共享 manifest 逐字不变、实际 lock 与计划的 JSON 结构相等；允许 npm 仅规范化对象键顺序，但版本、integrity、路径或依赖内容变化必须失败。逐项核对所有直接包实际 manifest、精确版本、lock 条目和 host links；任何实质变化或版本偏移均停止 herdr/selftest 等依赖步骤并记录部分完成。
+5. 目标已经满足精确版本且无需修复宿主链接时，不运行 npm 安装，只验证保留版本和链接。暂存目录在成功或失败后均清理，操作锁和 `last-result.json` 语义不变。
+
+不得退回逐包 `npm install --no-save`：真实 npm 实验表明，它可能提升未指定的直接依赖并留下过期 lockfile。当前方案利用 npm 对 lock integrity 的校验验证外部 registry 制品；Pi 宿主制品的完整端到端校验、固定 Release 的跨机发布语义、签名和可恢复格式仍属于 M2b-2，不能由本机 lock 计划替代宣称。
+
+### 19.5 保留、验证与未完成入口
+
+- fixed/manual 只评估并保留兼容的当前版本，不再因为不能使用原生批量更新而一律拒绝。宿主变化时其 peer unknown 仍阻塞宿主。
+- 宿主不变时，已有 unknown 资源可以保持并显示跳过，但未完成的升级使整体结果为 partial，不得聚合为 success。
+- 前置步骤成功后才允许重建受管 herdr 集成、运行显式 selftest 和执行最终 doctor。runtime load 未显式验证时继续标为 unknown。
+- 远程 Git 刷新、固定 Release、Pi 宿主等完整制品校验、restore、SSH、通用 herdr 插件和 skills/MCP Provider 不在本执行闭环内；日常命令的注册来源入口按第 20 节实现。
+
+## 20. M2b-1 来源注册与日常命令契约
+
+### 20.1 命令与边界
+
+```bash
+agentbrew source set --layer public=./public.json --layer personal=./personal.json
+agentbrew source list
+agentbrew update
+agentbrew diff
+agentbrew doctor
+agentbrew source clear
+```
+
+- 每个 Pi target 最多存在一份完整来源绑定，保存在该 target 的本机 `stateDir/sources.json`。`source set` 必须以本次完整 layer 列表原子替换旧绑定，不做隐式追加或跨文件合并。
+- 注册只减少重复输入，不授予 Manage/Generate ownership，不修改共享 layer 或受管资源，不执行 Pi/npm/herdr、doctor 或 selftest，不读取 Git 凭据、拉取仓库或发现 CWD/chezmoi/私人配置。
+- `source list` 无 action 时作为默认，仅读取绑定及 layer；`source clear` 验证绑定后在锁内删除。malformed 绑定不得通过 clear 静默清除，只能人工检查或以有效的新绑定完整替换。
+- `source set/clear` 与 update 共用 target operation lock；成功和失败均释放锁，并区分本机状态变化与受管资源未变化。
+
+### 20.2 本机 schema v1
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "agentbrew-source-registration",
+  "target": { "agentDir": "/home/alice/.pi/agent" },
+  "layers": [
+    { "layer": "public", "file": "/home/alice/config/public.json", "sha256": "<64-lowercase-hex>" },
+    { "layer": "personal", "file": "/home/alice/config/personal.json", "sha256": "<64-lowercase-hex>" }
+  ],
+  "inputHash": "<64-lowercase-hex>"
+}
+```
+
+- layer 顺序固定 public < team < personal < machine，每种最多一个，至少一个；file 必须是规范化绝对路径。哈希来自注册时 `loadBundle` 的完整校验结果。
+- 状态文件最大 64 KiB，必须是普通非 symlink 文件，以 `0600` 原子写入；target 必须与当前 `agentDir` 完全一致。未知字段、重复/乱序层、无效哈希、目标不符或损坏 JSON 均失败关闭。
+- 绑定是本机派生状态，不作为跨机共享输入，不包含凭据。绝对路径只允许在本机输出和状态中使用。
+
+### 20.3 优先级与内容变化
+
+- `inspect/diff/doctor/update/resolve/explain` 在无显式 `--layer` 时读取注册；有显式 `--layer` 时只使用本次输入且不读取或改写注册。`init/adopt/apply` 不隐式加载注册，typed plan 继续携带自己的来源。
+- 注册后每次命令重新读取并校验当前 layer 内容。`source list` 对合法编辑报告 changed，对缺失、无效或不可读内容报告 error；注册哈希是编辑溯源信息，不阻止本机正常修改 layer。
+- 注册存在但绑定或 layer 无效时，update 返回 `not-executed`，只读命令返回 `failed`。不得因注册损坏而回退原生批量更新。只有明确无绑定或 `source clear` 后才使用既有原生兼容路径。
+- 输出和 JSON 应注明本次来源为 explicit 或 registered，避免用户误认实际配置输入。
+
+### 20.4 并发与计划失效
+
+- 原生和 resolved update 均把 `sources.json` 原始内容指纹纳入锁前前提，并在 operation lock 内重新计算。绑定被替换、清除、改写或变为不可读时，旧计划必须停止，即使旧 layer 文件本身没有变化。
+- `source set` 在锁内重新校验本次 layer，防止等待锁期间以已变化内容注册；`source clear` 在锁内复核绑定身份与指纹，防止删除新绑定。
+- 显式 `--layer` 的单次执行不依赖注册指纹；typed plan 的 sourceHash 和复核规则独立于注册。注册变化不得提升 ownership 或授权任意原生更新。

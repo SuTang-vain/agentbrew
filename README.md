@@ -1,20 +1,24 @@
 # Agentbrew
 
-Agentbrew is a local-first CLI for Pi/herdr configuration, selective initialization, native updates, and health checks. Shared files describe resource intent; each machine keeps its own Pi host links, resolved packages, ownership, plans, and health evidence.
+Agentbrew is a local-first CLI for Pi/herdr configuration, selective initialization, compatibility-resolved updates, and health checks. Shared files describe resource intent; each machine keeps its own Pi host links, resolved packages, ownership, plans, and health evidence.
 
-This repository implements **M1a + M1b + M2a**. It is not the complete product described in `docs/PRD.md`.
+This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2c**. It is not the complete product described in `docs/PRD.md`.
 
 ## What works now
 
-- Read-only `inspect`, `diff`, `doctor`, and `explain`.
+- A resident read-only TUI opened by bare `agentbrew`, with Overview, Health, Changes, Update preview, Sources, and Help pages.
+- Read-only `inspect`, `diff`, `doctor`, `explain`, and `resolve`.
 - Guided `init`: Observe, Adopt, Repair, Manage, and selective Fresh install.
-- Native `update` with per-target ownership checks, locking, snapshots, and final health verification.
+- Bundle `update` with target-host resolution, host-first execution, exact extension versions, locking, snapshots, and final health verification.
+- The previous native `update` for configurations without explicit or registered layers.
+- Per-target `source set/list/clear` bindings for everyday commands, with explicit-layer precedence and fail-closed validation.
 - Public/team/personal/machine layers with explicit whole-resource overrides, tombstones, and team required/forbidden policy.
 - Separate `adopt` proposals, typed Bundle plans, and selective `apply`.
 - Static checks of both npm declarations and installed package versions for Bundle resources.
+- Target-host and extension resolution using the native Pi release channel, npm peer metadata, and registry integrity evidence.
 - Pi-style keyboard menus with accessible numbered fallbacks and versioned JSON output.
 
-Not implemented: fixed Bundle Releases, upstream artifact integrity, remote Git refresh, Pi target-host prediction, SSH deployment, restore, a registry, generic herdr plugin installation, and generic skills/MCP providers. The M2a `fixed` policy is a local declaration guard, not a team Release.
+Not implemented: fixed Bundle Releases, complete Pi host artifact verification, remote Git refresh, non-managed Pi host upgrades, SSH deployment, restore, a registry, generic herdr plugin installation, and generic skills/MCP providers. The M2a `fixed` policy is a local declaration guard, not a team Release.
 
 ## Requirements
 
@@ -34,6 +38,19 @@ npm run build
 node dist/bin/agentbrew.js --help
 ```
 
+## Interactive workspace
+
+Run `agentbrew` in a capable interactive terminal. It opens a foreground, full-screen workspace rather than a daemon:
+
+- **Overview** summarizes the local target, Pi/herdr, health, differences, and active sources.
+- **Health** and **Changes** reuse doctor and diff without repairing anything.
+- **Update preview** uses the same update path with `dryRun=true`; opening it may fetch release/npm metadata for a Bundle, but never acquires the write lock or installs anything.
+- **Sources** explains explicit or registered layers. **Help** lists the explicit CLI commands for writes.
+
+Use ↑/↓ and Enter to navigate, `r` to refresh, Esc to return to Overview, `?` for Help, and q or Ctrl+C to exit. A requested exit waits for an active read-only preview to settle. Normal q/EOF exit returns `0`; page health does not change the workspace exit status.
+
+Startup and ordinary refreshes perform only local read-only checks. The workspace never runs a real update, init/apply, source set/clear, selftest, Reset, or Agentbrew self-update. Use the explicit CLI commands below for those operations. Non-TTY bare invocation prints help; terminals without visual/raw-mode support retain the line-oriented init fallback. JSON and explicit subcommands never open the TUI.
+
 ## Try it without touching real configuration
 
 ```bash
@@ -43,7 +60,7 @@ npm install
 npm run sandbox -- --scenario bundle
 ```
 
-The sandbox supplies mock Pi/npm/herdr executables and isolated HOME/state directories. It does not use your real Pi, herdr, chezmoi, or global package configuration. Do not run repository build/test commands inside the mock shell because its `npm` is a test double.
+The sandbox supplies mock Pi/npm/herdr executables and isolated HOME/state directories. The `bundle` scenario also starts a loopback-only release/registry metadata service and pre-authorizes its disposable resources for update demonstrations; it serves metadata only, not package tarballs. Everything stops or resets when you leave or restart the sandbox. It does not use your real Pi, herdr, chezmoi, or global package configuration. Do not run repository build/test commands inside the mock shell because its `npm` is a test double.
 
 Available scenarios:
 
@@ -100,6 +117,48 @@ agentbrew explain \
 
 Use `--resource <id>` to focus the explanation and `--json` for structured output.
 
+## Registered source inputs
+
+Register an explicit layer list once for the current Pi target:
+
+```bash
+agentbrew source set \
+  --layer public="$AGENTBREW_SANDBOX/layers/public.json"
+agentbrew source list
+agentbrew update
+agentbrew diff
+agentbrew doctor
+agentbrew source clear
+```
+
+- `source set` validates and atomically replaces the complete binding. It does not append layers, run providers, or change managed resources.
+- The binding is stored as `sources.json` with mode `0600` in this target's local state directory. It contains normalized absolute paths and content hashes, not credentials or shared configuration.
+- `inspect`, `diff`, `doctor`, `update`, `resolve`, and `explain` can use the registered inputs. A one-shot explicit `--layer` takes precedence without rewriting the binding. `init`, `adopt`, and typed-plan `apply` do not load it implicitly.
+- `source list` reports current or changed content. Missing, malformed, cross-target, or unreadable registrations fail explicitly; update never silently falls back to native bulk update when a binding is damaged.
+- Registration does not grant Manage ownership, discover the current directory, read Git credentials, or fetch repositories. `source set` and `clear` share the target operation lock with update, so a changed binding invalidates an in-flight plan.
+- After `source clear`, or when no binding was ever registered, `update` retains the native compatibility path described below.
+
+## Read-only compatibility resolution
+
+Resolve a target host and compatible npm versions without changing resources:
+
+```bash
+agentbrew resolve \
+  --layer public="$AGENTBREW_SANDBOX/layers/public.json" \
+  --resource npm:pi-subagents \
+  --verbose
+```
+
+The resolver uses the same `https://pi.dev/api/latest-version` release channel as native Pi, then reads exact host and extension metadata from the npm registry. It selects the newest version satisfying both the Bundle constraint and all declared Pi peer constraints; if the newest candidate is incompatible, it can fall back to an older compatible version. Results include current/target versions, peer evidence, registry integrity, and `ready`/`complete` status.
+
+- Exact, `^`, and `~` Bundle constraints are supported. Peer checks also support `*`, comparison operators, whitespace AND, and `||`; unsupported ranges become unknown rather than compatible.
+- `fixed` and `manual` resources evaluate only the installed version and do not select an upgrade.
+- Missing peer metadata is never treated as proof of compatibility. A new required resource is blocked; an existing resource can remain with a warning. If the host changes while any existing resource is unknown, `ready=false` and subsequent updates must remain blocked.
+- `PI_OFFLINE=1` stops before any network request. Metadata requests use HTTPS, timeouts, and response-size limits; they do not read npm credentials, download package code, create state, or acquire locks.
+- Registry integrity is recorded as resolution evidence. During execution, Agentbrew also checks it against the staged external-package lockfile, which npm uses to verify downloaded registry artifacts. Pi host artifact verification is not complete, and installation does not prove runtime loading.
+
+`update` with explicit layers uses this same resolver; there is no separate version-selection implementation for execution.
+
 ## Adoption proposals
 
 Create a separate personal-layer proposal from existing resources:
@@ -140,28 +199,36 @@ A Bundle plan contains only typed actions:
 
 The same `apply --plan` command also accepts init plans created by `init --plan-out`.
 
-## Native updates with a Bundle
+## Resolved Bundle updates
 
-`update` retains the existing native Pi workflow, but adds Bundle guards:
+Preview and execute a compatibility-resolved update:
 
-- Declaration drift stops execution and points to the selective plan workflow.
-- Bundle updates require initialized local ownership; team/shared intent is not local write authorization.
-- Installed `fixed` or `manual` npm resources block `pi update --all`, because that native command cannot exclude them. A native per-resource updater is not implemented.
-- Compatible declarations can use the native update when all ownership checks pass. Agentbrew then re-resolves the actual host, repairs managed links, installs dependencies, updates managed integration, and checks health again.
-- A manual herdr integration is checked but not regenerated automatically.
+```bash
+agentbrew update \
+  --layer public="$AGENTBREW_SANDBOX/layers/public.json" \
+  --dry-run
 
-A normal native update performs:
+agentbrew update --layer public="$AGENTBREW_SANDBOX/layers/public.json"
+```
 
-1. Validate ownership, Bundle state, host, manifest, dependencies, and replaceable links.
-2. Acquire the target lock and re-check target, ownership, and source fingerprints.
-3. Save a local snapshot, including the npm manifest and package-lock when present.
-4. Run `pi update --all` only when every affected resource is managed and no policy blocker exists.
-5. Re-resolve the active host and repair `npm/host-link` plus `npm/host-deps/*`.
-6. Use portable `file:host-link` and `file:host-deps/*` declarations, then run npm install.
-7. Rebuild herdr integration only when managed and allowed by policy.
-8. Verify native links, Bundle declarations, installed package versions, integration, and optional selftest.
+Every affected resource needs explicit local Manage/Generate ownership. Declaration drift stops execution, and every managed external npm package must have an active Bundle declaration so npm cannot silently update an unplanned resource. Layers come from explicit `--layer` inputs or the per-target registration described above; automatic private-configuration discovery and remote refresh are not implemented.
 
-Agentbrew does not claim that npm installation alone proves host compatibility or runtime loading.
+The resolved workflow:
+
+1. Resolve the target host and all npm resources before locking. `PI_OFFLINE=1`, metadata errors, blocked resources, or unknown compatibility during a host change stop before managed writes.
+2. Acquire the target lock and re-check source hashes, ownership, host, manifest, package-lock, and installed package manifests. Save the resolution and local snapshot before execution.
+3. If the host must change, run `pi update --self`, never `pi update --all`. Re-discover the host and require both its package version and `pi --version` to equal the plan. A failure or mismatch blocks every extension update. Cross-version updates currently require a managed Pi installation.
+4. Derive internal Pi dependencies from the actual target host, verify them against registry metadata, and repair managed `host-link`/`host-deps` links. Their exact versions never enter shared layers.
+5. Generate a complete lockfile in an isolated temporary directory. Every direct external dependency is pinned to its resolved target or retained current version, including fixed/manual resources. Restore portable semver ranges at the lockfile root, verify exact versions and registry integrity, then install using that lock with `--ignore-scripts --legacy-peer-deps`. The manifest, reviewed lockfile, every installed direct package, and host links are verified afterward.
+6. Rebuild managed herdr integration, run selftest only when explicitly enabled, and finish with doctor.
+
+`fixed` and `manual` resources keep their current version after peer compatibility is proven; they are not rejected merely because native bulk update cannot exclude them. With a stable host, an existing unknown resource may be retained, but its skipped upgrade makes the overall update partial rather than successful.
+
+Agentbrew deliberately does not use per-package `npm install --no-save`: real npm can advance another direct dependency and leave a stale lockfile. The staged plan is saved as `last-install-plan.json` and `last-package-lock.plan.json`, and temporary files are removed after execution. npm verifies external registry artifacts against the reviewed lock integrity; complete Pi host artifact verification, fixed Release semantics, and runtime loading remain separate checks or future work.
+
+### Native update without layers
+
+`agentbrew update` without `--layer` retains the previous `pi update --all` compatibility path, followed by link repair, npm install, managed herdr integration, and doctor. It does not claim target-host compatibility resolution or fixed/manual Bundle policy enforcement. Use an explicit Bundle for those guarantees.
 
 ## First-use initialization
 
@@ -198,7 +265,7 @@ A generic `--yes` cannot replace these choices. Use `init --plan-out <file>` fol
 
 In a capable TTY, use ↑/↓ to move, Enter to select, Space to toggle resources, and `a`/`n` to select all/clear optional items. q, Esc, or Ctrl+C cancels. Confirmation pages default to Cancel; required resources cannot be deselected.
 
-The menu preserves the main terminal buffer and restores cursor/input state. Non-TTY streams, `TERM=dumb`, and terminals without raw-mode support use numbered choices and `y/N` confirmation. `NO_COLOR` disables colors. JSON never contains ANSI styling or interactive prompts.
+Guided one-shot menus preserve the main terminal buffer; the resident workspace uses an alternate screen. Both restore cursor and input state, including startup failures and cancellation. Interactive terminals with `TERM=dumb` or without raw-mode support use numbered choices and `y/N` confirmation; non-TTY streams never prompt. `NO_COLOR` disables colors without disabling a capable TUI. JSON never contains ANSI styling or interactive prompts.
 
 ## Health, selftest, and exit status
 
@@ -239,11 +306,15 @@ The operation lock is conservative: an existing lock stops modification. After a
 - `src/bundle-plan.ts`: typed Bundle plans and source/target revalidation.
 - `src/bundle-apply.ts`: locked selective Bundle execution.
 - `src/adopt.ts`, `src/explain.ts`: read-only proposals and source explanations.
+- `src/metadata.ts`, `src/resolve.ts`, `src/resolve-cli.ts`: bounded metadata access and target-host/asset resolution.
+- `src/npm-spec.ts`: exact/caret/tilde and peer-range evaluation.
 - `src/init.ts`, `src/init-cli.ts`, `src/init-apply.ts`: first-use detection and selective initialization.
-- `src/plan.ts`: native update orchestration and read-only commands.
+- `src/plan.ts`, `src/resolved-update.ts`, `src/immutable-npm.ts`: update path selection, resolved execution, and staged npm lock plans.
+- `src/source-state.ts`, `src/sources.ts`, `src/source-cli.ts`, `src/source-context.ts`: strict per-target source registration and repeatable source preparation.
 - `src/providers/`: Pi and herdr integrations.
-- `src/terminal*.ts`: terminal styling and keyboard menus.
-- `test/`: isolated provider/CLI/Bundle/interaction tests, including local npm linking.
-- `scripts/sandbox.*`: disposable mock environments.
+- `src/terminal*.ts`, `src/result-view.ts`: terminal styling, keyboard menus, and shared result presentation.
+- `src/tui.ts`, `src/tui-view.ts`: resident read-only workspace, keyboard parsing, bounded rendering, and terminal restoration.
+- `test/`: isolated provider/CLI/Bundle/interaction tests, including exact npm updates and loopback metadata.
+- `scripts/sandbox.*`: disposable mock environments and their loopback metadata service.
 
-`docs/PRD.md` contains the long-term product contract and the detailed M2a execution semantics. This README describes only the implemented slice.
+`docs/PRD.md` contains the long-term product contract and the detailed M2a/M2b/M2c execution semantics. This README describes only the implemented slice.

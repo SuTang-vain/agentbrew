@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { assertInside, isInside, type Context } from "../context.js";
 import { assertProcessSuccess, formatCommand, runProcess } from "../process.js";
+import type { ResolvedBundle } from "../bundle.js";
+import { satisfiesPeerRange } from "../npm-spec.js";
+import { sourceRegistrationFingerprint } from "../source-state.js";
 import {
   failedStep,
   successfulStep,
@@ -422,6 +425,104 @@ export function reconcilePi(context: Context): StepResult[] {
   const links = reconcileLinks(context, host);
   if (links.status === "failed") return [links];
   return [links, installDependencies(context, host)];
+}
+
+export function verifyPiHost(context: Context, targetVersion: string): HostInfo {
+  const host = resolveHost(context);
+  if (host.version !== targetVersion) {
+    throw new Error(`active Pi host is ${host.version}, but the resolved plan requires ${targetVersion}; extension execution is blocked`);
+  }
+  const result = runProcess("pi", ["--version"], { cwd: context.agentDir, env: context.env, timeout: 30_000 });
+  assertProcessSuccess(result);
+  const actual = result.stdout.trim().replace(/^pi\s+/, "");
+  if (actual !== targetVersion) throw new Error(`pi --version reports ${actual || "an empty version"}, expected ${targetVersion}`);
+  return host;
+}
+
+export function updatePiHostTo(context: Context, targetVersion: string): StepResult {
+  const label = `Update only the Pi host to the resolved version ${targetVersion}`;
+  try {
+    if (resolveHost(context).source !== "managed") throw new Error("only managed Pi installations support resolved host updates");
+    const result = runProcess("pi", ["update", "--self"], {
+      cwd: context.agentDir,
+      env: context.env,
+      timeout: 600_000,
+    });
+    assertProcessSuccess(result);
+    verifyPiHost(context, targetVersion);
+    return successfulStep("pi-host", label, "observed", `active host ${targetVersion}; extensions were not updated by Pi`);
+  } catch (error) {
+    return failedStep("pi-host", label, error);
+  }
+}
+
+export function resolvedUpdateFingerprint(context: Context, bundle: ResolvedBundle): string {
+  const hash = createHash("sha256");
+  hash.update(piFingerprint(context));
+  hash.update(`\0source-registration\0${sourceRegistrationFingerprint(context)}\0`);
+  const lockFile = path.join(context.npmDir, "package-lock.json");
+  hash.update("\0package-lock\0");
+  hash.update(fs.existsSync(lockFile) ? fs.readFileSync(lockFile) : Buffer.from("<missing>"));
+  for (const id of Object.keys(bundle.resources).sort()) {
+    if (!id.startsWith("npm:")) continue;
+    hash.update(`\0${id}\0`);
+    try {
+      hash.update(fs.readFileSync(path.join(context.npmDir, "node_modules", id.slice(4), "package.json")));
+    } catch {
+      hash.update("<missing>");
+    }
+  }
+  return hash.digest("hex");
+}
+
+export function reconcileResolvedPi(
+  context: Context,
+  host: HostInfo,
+  expectedDependencies: Record<string, string>,
+): StepResult[] {
+  const label = "Reconcile machine-local dependencies derived from the resolved host";
+  try {
+    const names = freshHostDependencies(host).sort();
+    const expectedNames = Object.keys(expectedDependencies).sort();
+    if (JSON.stringify(names) !== JSON.stringify(expectedNames)) {
+      throw new Error(`target host dependency set differs from registry metadata: actual ${names.join(", ") || "none"}; expected ${expectedNames.join(", ") || "none"}`);
+    }
+    for (const [name, range] of Object.entries(expectedDependencies)) {
+      const installed = readJson(path.join(hostDependencyTarget(host, name), "package.json"));
+      if (!validVersion(installed.version) || satisfiesPeerRange(installed.version, range) !== true) {
+        throw new Error(`host dependency ${name}@${String(installed.version)} does not satisfy the resolved ${range}`);
+      }
+    }
+    const manifest = readManifest(context);
+    const dependencies = Object.fromEntries(Object.entries(manifest.dependencies)
+      .filter(([name]) => name === HOST_PACKAGE || !name.startsWith("@earendil-works/pi-")));
+    dependencies[HOST_PACKAGE] = "file:host-link";
+    for (const name of names) dependencies[name] = `file:host-deps/${path.basename(name)}`;
+    const changed = JSON.stringify(manifest.dependencies) !== JSON.stringify(dependencies);
+    if (changed) {
+      manifest.dependencies = dependencies;
+      writeManifest(context, manifest);
+    }
+    const declarations = successfulStep("pi-host-deps", label, changed ? "observed" : "none", `${names.length} target host dependency(ies)`);
+    const links = reconcileLinks(context, host);
+    if (links.status === "failed") return [declarations, links];
+    return [declarations, links, repairPiGeneratedLinks(context, host)];
+  } catch (error) {
+    return [failedStep("pi-host-deps", label, error)];
+  }
+}
+
+export function verifyPiInstallation(context: Context): void {
+  verifyInstalledLinks(context, resolveHost(context));
+}
+
+export function piInstallationMatches(context: Context): boolean {
+  try {
+    verifyPiInstallation(context);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function doctorPi(context: Context): HealthCheck[] {

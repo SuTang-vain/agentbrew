@@ -7,15 +7,22 @@ import { explainCommand } from "./explain.js";
 import { applyFromFile, runInteractiveInit, runNonInteractiveInit } from "./init-cli.js";
 import { diffCommand, doctorCommand, inspectCommand, updateCommand } from "./plan.js";
 import { redact } from "./process.js";
+import { resolveCommand } from "./resolve-cli.js";
+import { renderResult } from "./result-view.js";
+import { sourceCommand, type SourceAction } from "./source-cli.js";
+import { prepareContextSources, sourceInputError } from "./source-context.js";
 import { canUseTerminalMenu } from "./terminal-menu.js";
-import { createTerminalStyle, type TerminalStyle } from "./terminal.js";
+import { createTerminalStyle } from "./terminal.js";
+import { runTui } from "./tui.js";
 import type { CommandResult, OverallStatus } from "./types.js";
 
-const HELP = `Usage: agentbrew [init] [options]
-       agentbrew <inspect|diff|doctor|update|explain|adopt|apply> [options]
+const HELP = `Usage: agentbrew [options]
+       agentbrew <inspect|diff|doctor|update|resolve|explain|adopt|apply> [options]
+       agentbrew source [set|list|clear] [options]
 
 Local-first Pi and herdr environment inspection, selective initialization,
 portable configuration layers, updates, and health checks.
+Without a command, a capable interactive terminal opens the read-only workspace.
 
 Commands:
   init          Assess the target, explain choices, and apply only selected resources
@@ -23,9 +30,11 @@ Commands:
   diff          Show configuration and host-link differences without changing them
   doctor        Check the current configuration and native integration health
   update        Update explicitly managed Pi/extensions and verify the result
-  explain       Explain effective resources from explicit --layer inputs
+  resolve       Resolve target host and compatible npm versions without changes
+  explain       Explain effective resources from explicit or registered layers
   adopt         Create a separate personal-layer proposal; do not change resources
   apply         Apply a reviewed typed plan from --plan <file>
+  source        Set, list, or clear this target's registered layer inputs
 
 Options:
   --agent-dir <path>  Pi configuration root (default: PI_AGENT_DIR or ~/.pi/agent)
@@ -63,74 +72,6 @@ function exitCode(status: OverallStatus): number {
   if (status === "cancelled") return 5;
   if (status === "not-executed") return 6;
   return 1;
-}
-
-function renderResult(result: CommandResult, verbose: boolean, style?: TerminalStyle): string {
-  const lines = [`target: ${result.target.agentDir}`];
-  const data = result.data as any;
-  if (result.command === "inspect" && data) {
-    if (data.pi?.host) lines.push(`pi: ${data.pi.host.version} (${data.pi.host.source})`);
-    if (data.herdr) {
-      lines.push(data.herdr.available
-        ? `herdr: ${data.herdr.version ?? "available"}; pi integration: ${data.herdr.integration}; plugins: ${data.herdr.plugins?.length ?? 0}`
-        : `herdr: unavailable${data.herdr.error ? ` (${data.herdr.error})` : ""}`);
-    }
-  }
-  if (data?.assessment) {
-    const assessment = data.assessment;
-    const failed = result.checks.filter((check) => check.status === "fail").length;
-    const warnings = result.checks.filter((check) => check.status === "warn").length;
-    lines.push(`classification: ${assessment.classification}`);
-    lines.push(`pi: ${assessment.host ? `${assessment.host.version} (${assessment.host.source})` : "no usable host found"}`);
-    lines.push(`health: ${failed} failing check(s), ${warnings} warning(s), ${result.differences.length} difference(s)`);
-    if (assessment.issues?.length) lines.push(...assessment.issues.map((issue: string) => `issue: ${issue}`));
-  }
-  if (data?.planOut) lines.push(`plan: ${data.planOut}`);
-  if (data?.output) lines.push(`proposal: ${data.output} (not an active configuration layer)`);
-  if (data?.resources && result.command === "explain") {
-    for (const resource of data.resources) {
-      const declaration = resource.declaration ? ` ${JSON.stringify(resource.declaration)}` : "";
-      lines.push(`${resource.id}: ${resource.state}; winner=${resource.layer}; required=${resource.required}${declaration}`);
-      lines.push(`  history: ${resource.history.map((event: any) => `${event.layer}:${event.effect}`).join(" -> ")}`);
-      if (resource.target) lines.push(`  target: ${resource.target}`);
-    }
-  }
-  if (data?.bundle && result.command !== "explain") {
-    lines.push(`bundle: ${data.bundle.resources.length} resource(s), ${data.bundle.removed.length} removal(s), ${data.bundle.required.length} required`);
-  }
-  if (data?.initializedResources) lines.push(`initialized: ${data.initializedResources.join(", ") || "none"}`);
-  if (typeof data?.remainingDifferences === "number" && data.remainingDifferences > 0) {
-    lines.push(`remaining differences: ${data.remainingDifferences} (unselected; use --verbose to expand)`);
-  }
-  const assessmentOnly = result.command === "init" && data?.assessment;
-  if (!["init", "apply"].includes(result.command) || verbose) {
-    for (const difference of result.differences) {
-      lines.push(`DIFF ${difference.resource} ${difference.kind}: ${difference.actual} -> ${difference.expected}`);
-    }
-  } else if (assessmentOnly && result.differences.length > 0) {
-    lines.push("use --verbose to show individual differences");
-  }
-  for (const step of result.steps) {
-    const marker = step.status === "success" ? "OK" : step.status === "failed" ? "FAIL" : step.status === "skipped" ? "SKIP" : "PLAN";
-    lines.push(`${marker} ${step.label}${step.message ? ` — ${step.message}` : ""}`);
-  }
-  if (!assessmentOnly || verbose) {
-    for (const check of result.checks) lines.push(`${check.status.toUpperCase()} ${check.resource}: ${check.message}`);
-  }
-  if (result.error) lines.push(`error: ${result.error}`);
-  lines.push(`result: ${result.status}; changes: ${result.changes}`);
-  if (!style) return lines.join("\n");
-  const statusTone = result.status === "success" ? "success" : result.status === "cancelled" || result.status === "not-executed" ? "warning" : "error";
-  const rendered = lines.map((line) => {
-    if (line.startsWith("PASS ") || line.startsWith("OK ")) return style.paint(line, "success");
-    if (line.startsWith("WARN ")) return style.paint(line, "warning");
-    if (line.startsWith("FAIL ") || line.startsWith("error:")) return style.paint(line, "error");
-    if (line.startsWith("DIFF ") || line.startsWith("SKIP ") || line.startsWith("target:")) return style.paint(line, "muted");
-    if (line.startsWith("PLAN ") || line.startsWith("initialized:")) return style.paint(line, "accent");
-    if (line.startsWith("result:")) return style.paint(line, statusTone);
-    return line;
-  });
-  return ["", style.title(`Agentbrew · ${result.command}`), style.rule(), ...rendered].join("\n");
 }
 
 function packageVersion(): string {
@@ -177,22 +118,38 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
       io.output.write(HELP);
       return 0;
     }
+    const initOrExecutionOption = values.expect || values.mode || values.resource || values.apply
+      || values["plan-out"] || values.output || values.plan || values["dry-run"] || values.selftest || values.verbose;
+    if (positionals.length === 0 && interactive && !values.json && !initOrExecutionOption
+      && canUseTerminalMenu({ ...io, env: io.env ?? process.env })) {
+      const context = createContext({
+        agentDir: values["agent-dir"],
+        stateDir: values["state-dir"],
+        layers: values.layer,
+      }, io.env ?? process.env);
+      return await runTui(context, io);
+    }
     const command = positionals[0] ?? "init";
-    if (positionals.length > 1 || !["init", "apply", "inspect", "diff", "doctor", "update", "explain", "adopt"].includes(command)) {
-      throw new Error("expected one command: init, apply, inspect, diff, doctor, update, explain, or adopt");
+    const sourceAction = positionals[1] ?? "list";
+    const commands = ["init", "apply", "inspect", "diff", "doctor", "update", "resolve", "explain", "adopt", "source"];
+    if (!commands.includes(command) || (command === "source"
+      ? positionals.length > 2 || !["set", "list", "clear"].includes(sourceAction)
+      : positionals.length > 1)) {
+      throw new Error("expected a supported command, or source [set|list|clear]");
     }
     if (values["dry-run"] && command !== "update") throw new Error("--dry-run is only valid with update");
     if (values.selftest && !["update", "doctor"].includes(command)) throw new Error("--selftest is only valid with update or doctor");
-    if (values.verbose && !["init", "apply"].includes(command)) throw new Error("--verbose is only valid with init or apply");
+    if (values.verbose && !["init", "apply", "resolve"].includes(command)) throw new Error("--verbose is only valid with init, apply, or resolve");
     if (values.expect && command !== "init") throw new Error("--expect is only valid with init");
     if (values.apply && command !== "init") throw new Error("--apply is only valid with init");
     if (values.mode && !["init", "diff"].includes(command)) throw new Error("--mode is only valid with init or diff planning");
-    if (values.resource && !["init", "diff", "explain", "adopt"].includes(command)) throw new Error("--resource is not valid with this command");
+    if (values.resource && !["init", "diff", "resolve", "explain", "adopt"].includes(command)) throw new Error("--resource is not valid with this command");
     if (values["plan-out"] && !["init", "diff"].includes(command)) throw new Error("--plan-out is only valid with init or diff");
     if (values.output && command !== "adopt") throw new Error("--output is only valid with adopt");
-    if (values.layer && !["inspect", "diff", "doctor", "update", "explain"].includes(command)) {
-      throw new Error("--layer is supported by inspect, diff, doctor, update, and explain; typed plans carry their own sources");
+    if (values.layer && !["inspect", "diff", "doctor", "update", "resolve", "explain", "source"].includes(command)) {
+      throw new Error("--layer is supported by inspect, diff, doctor, update, resolve, explain, and source set");
     }
+    if (command === "source" && values.layer && sourceAction !== "set") throw new Error("--layer is only valid with source set");
     if (values.plan && command !== "apply") throw new Error("--plan is only valid with apply");
     if (command === "apply" && !values.plan) throw new Error("apply requires --plan <file>");
 
@@ -203,8 +160,20 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
       selftest: values.selftest,
       layers: values.layer,
     }, io.env ?? process.env);
+    const sourceAware = ["inspect", "diff", "doctor", "update", "resolve", "explain"].includes(command);
+    let sourceError: CommandResult | undefined;
+    if (sourceAware && values.layer === undefined) {
+      try {
+        prepareContextSources(context);
+      } catch (error) {
+        sourceError = sourceInputError(context, command as CommandResult["command"], error);
+      }
+    }
+
     let result: CommandResult;
-    if (command === "init") {
+    if (sourceError) {
+      result = sourceError;
+    } else if (command === "init") {
       const scripted = values.json || values.expect || values.mode || values.resource || values.apply || values["plan-out"];
       result = interactive && !scripted
         ? await runInteractiveInit(context, io, values.verbose)
@@ -223,6 +192,8 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
       result = bundlePlanCommand(context, values.resource ?? [], values.mode, values["plan-out"]);
     } else if (command === "doctor") {
       result = doctorCommand(context);
+    } else if (command === "resolve") {
+      result = await resolveCommand(context, values.resource ?? []);
     } else if (command === "explain") {
       result = explainCommand(context, values.resource ?? []);
     } else if (command === "adopt") {
@@ -230,8 +201,13 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
       result = interactive && !scripted
         ? await runInteractiveAdopt(context, io, values.output)
         : writeAdoptionProposal(context, values.resource ?? [], values.output ?? "");
+    } else if (command === "source") {
+      result = sourceCommand(context, sourceAction as SourceAction);
     } else {
-      result = updateCommand(context);
+      result = await updateCommand(context);
+    }
+    if (sourceAware && context.layerOrigin !== "none") {
+      result.data = { ...(result.data as object ?? {}), layerOrigin: context.layerOrigin };
     }
 
     const outputStream = values.json || result.status === "success" ? io.output : io.error;

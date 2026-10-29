@@ -33,7 +33,7 @@ export function canUseTerminalMenu(io: TerminalMenuIO): boolean {
   return io.input.isTTY === true
     && io.output.isTTY === true
     && typeof io.input.setRawMode === "function"
-    && io.env?.TERM !== "dumb"
+    && (io.env ?? process.env).TERM !== "dumb"
     && (io.output.columns || 80) >= 32;
 }
 

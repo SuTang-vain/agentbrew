@@ -67,3 +67,57 @@ export function satisfiesNpmConstraint(version: string, spec: string): boolean {
         : { major: 0, minor: 0, patch: base.patch + 1, prerelease: [] };
   return compareCore(actual, upper) < 0;
 }
+
+export function compareNpmVersions(left: string, right: string): number | null {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  return a && b ? compareVersion(a, b) : null;
+}
+
+function satisfiesComparator(actual: Version, token: string): boolean | null {
+  const match = /^(>=|<=|>|<|=|\^|~)?(.+)$/.exec(token);
+  if (!match) return null;
+  const operator = match[1] ?? "";
+  const base = parseVersion(match[2]!);
+  if (!base) return null;
+  if (operator === "^" || operator === "~") return satisfiesNpmConstraint(
+    `${actual.major}.${actual.minor}.${actual.patch}${actual.prerelease.length ? `-${actual.prerelease.join(".")}` : ""}`,
+    token,
+  );
+  const comparison = compareVersion(actual, base);
+  if (operator === ">") return comparison > 0;
+  if (operator === ">=") return comparison >= 0;
+  if (operator === "<") return comparison < 0;
+  if (operator === "<=") return comparison <= 0;
+  return comparison === 0;
+}
+
+function satisfiesAndRange(actual: Version, range: string): boolean | null {
+  if (range === "*") return actual.prerelease.length === 0;
+  const tokens = range.split(/\s+/);
+  const bases = tokens.map((token) => /^(?:>=|<=|>|<|=|\^|~)?(.+)$/.exec(token)?.[1]).filter((value): value is string => Boolean(value));
+  const allowsPrerelease = bases.some((value) => {
+    const base = parseVersion(value);
+    return base && base.prerelease.length > 0 && compareCore(base, actual) === 0;
+  });
+  const results = tokens.map((token) => satisfiesComparator(actual, token));
+  if (results.some((result) => result === null)) return null;
+  if (actual.prerelease.length > 0 && !allowsPrerelease) return false;
+  return results.every((result) => result === true);
+}
+
+export function satisfiesPeerRange(version: string, range: string): boolean | null {
+  const actual = parseVersion(version);
+  if (!actual) return null;
+  const trimmed = range.trim();
+  if (trimmed === "" || trimmed === "*") return actual.prerelease.length === 0;
+  const branches = trimmed.split("||").map((branch) => branch.trim());
+  if (branches.some((branch) => branch === "")) return null;
+  let unsupported = false;
+  for (const branch of branches) {
+    const result = satisfiesAndRange(actual, branch);
+    if (result === true) return true;
+    if (result === null) unsupported = true;
+  }
+  return unsupported ? null : false;
+}

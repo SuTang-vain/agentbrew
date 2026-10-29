@@ -2,6 +2,8 @@ import type { Context } from "./context.js";
 import { bundleDifferences, bundleHealth, bundleSummary, loadBundle, type ResolvedBundle } from "./bundle.js";
 import { isManaged, readOwnership, type OwnershipState } from "./ownership.js";
 import { redact } from "./process.js";
+import { resolvedUpdateCommand } from "./resolved-update.js";
+import { sourceRegistrationFingerprint } from "./source-state.js";
 import { withOperationLock, writeStateJson } from "./state.js";
 import {
   combineChanges,
@@ -123,17 +125,6 @@ function integrationUpdatable(state: OwnershipState | null, bundle: ResolvedBund
   return integrationManaged(state) && !(declaration && !("source" in declaration) && declaration.update === "manual");
 }
 
-function nativePolicyBlockers(context: Context, bundle: ResolvedBundle | null): string[] {
-  if (!bundle) return [];
-  const manifest = readPiManifest(context);
-  return Object.entries(bundle.resources)
-    .filter(([id, resource]) => id.startsWith("npm:")
-      && "source" in resource.declaration
-      && resource.declaration.update !== "compatible"
-      && manifest.dependencies[id.slice(4)] !== undefined)
-    .map(([id]) => id);
-}
-
 function dryRunUpdate(context: Context, ownership: OwnershipState | null, bundle: ResolvedBundle | null): CommandResult {
   const result = baseResult(context, "update");
   try {
@@ -164,7 +155,7 @@ function dryRunUpdate(context: Context, ownership: OwnershipState | null, bundle
   return result;
 }
 
-export function updateCommand(context: Context): CommandResult {
+export async function updateCommand(context: Context): Promise<CommandResult> {
   let ownership: OwnershipState | null;
   let bundle: ResolvedBundle | null;
   try {
@@ -191,23 +182,19 @@ export function updateCommand(context: Context): CommandResult {
       result.data = { ...(result.data as object), unmanagedResources: unmanaged };
       return result;
     }
-    const policyBlockers = nativePolicyBlockers(context, bundle);
-    if (policyBlockers.length > 0) {
-      result.status = "not-executed";
-      result.error = `native Pi update cannot exclude fixed/manual resources: ${policyBlockers.join(", ")}; no native per-resource updater is implemented`;
-      result.data = { ...(result.data as object), policyBlockers };
-      return result;
-    }
+    if (bundle) return resolvedUpdateCommand(context, ownership!, bundle);
   } catch (error) {
     return errorResult(context, "update", error);
   }
   if (context.dryRun) return dryRunUpdate(context, ownership, bundle);
 
   let fingerprint: string;
+  let sourceFingerprint: string;
   let snapshot: unknown;
   try {
     preflightPi(context);
     fingerprint = piFingerprint(context);
+    sourceFingerprint = sourceRegistrationFingerprint(context);
     snapshot = snapshotPi(context);
   } catch (error) {
     return errorResult(context, "update", error);
@@ -219,9 +206,8 @@ export function updateCommand(context: Context): CommandResult {
       result.data = { bundle: bundleSummary(bundle) };
       result.steps.push(successfulStep("preflight", "Validate the target and capture a pre-update snapshot"));
       try {
-        const currentBundle = loadBundle(context.layers);
-        if (piFingerprint(context) !== fingerprint || JSON.stringify(readOwnership(context)) !== JSON.stringify(ownership)
-          || currentBundle?.inputHash !== bundle?.inputHash || (bundle && bundleDifferences(context, currentBundle!).length > 0)) {
+        if (piFingerprint(context) !== fingerprint || sourceRegistrationFingerprint(context) !== sourceFingerprint
+          || JSON.stringify(readOwnership(context)) !== JSON.stringify(ownership)) {
           throw new Error("the target, ownership, or Bundle changed while waiting for the operation lock; review the new state and retry");
         }
         writeStateJson(context, "last-snapshot.json", snapshot);

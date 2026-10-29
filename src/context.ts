@@ -11,6 +11,7 @@ export interface Context {
   dryRun: boolean;
   selftest: boolean;
   layers: string[];
+  layerOrigin: "explicit" | "registered" | "none";
   env: NodeJS.ProcessEnv;
 }
 
@@ -33,6 +34,7 @@ export function createContext(options: ContextOptions = {}, env: NodeJS.ProcessE
     dryRun: options.dryRun ?? false,
     selftest: options.selftest ?? false,
     layers: [...(options.layers ?? [])],
+    layerOrigin: options.layers?.length ? "explicit" : "none",
     env,
   };
 }

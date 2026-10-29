@@ -1,6 +1,6 @@
 export const RESULT_SCHEMA_VERSION = 1;
 
-export type CommandName = "inspect" | "diff" | "doctor" | "update" | "init" | "apply" | "explain" | "adopt";
+export type CommandName = "inspect" | "diff" | "doctor" | "update" | "init" | "apply" | "explain" | "adopt" | "resolve" | "source";
 export type Ownership = "observe" | "adopt" | "manage" | "generate";
 export type ChangeState = "none" | "observed" | "unknown";
 export type OverallStatus = "success" | "partial" | "unhealthy" | "failed" | "cancelled" | "not-executed";

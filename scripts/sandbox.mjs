@@ -85,6 +85,10 @@ exec node ${JSON.stringify(path.join(repo, "dist", "bin", "agentbrew.js"))} "$@"
 
 executable(path.join(bin, "pi"), `#!/bin/sh
 printf 'pi %s\\n' "$*" >> "$AGENTBREW_SANDBOX/commands.log"
+if [ "$MOCK_PI_FAIL" = "1" ]; then
+  printf 'Sandbox Pi failure requested\\n' >&2
+  exit 23
+fi
 if [ "$1" = "--version" ]; then
   cat "$PI_AGENT_DIR/install/current-version"
   exit 0
@@ -94,7 +98,12 @@ if [ "$1" = "update" ] && [ "$2" = "--all" ]; then
   printf 'Sandbox Pi and extensions updated to 1.5.0\\n'
   exit 0
 fi
-printf 'sandbox pi only supports --version and update --all\\n' >&2
+if [ "$1" = "update" ] && [ "$2" = "--self" ]; then
+  printf '1.5.0\\n' > "$PI_AGENT_DIR/install/current-version"
+  printf 'Sandbox Pi host updated to 1.5.0; extensions unchanged\\n'
+  exit 0
+fi
+printf 'sandbox pi only supports --version, update --all, and update --self\\n' >&2
 exit 2
 `);
 
@@ -103,7 +112,54 @@ printf 'npm %s\\n' "$*" >> "$AGENTBREW_SANDBOX/commands.log"
 if [ "$1" = "root" ]; then exit 1; fi
 if [ "$1" = "install" ]; then
   if [ "$MOCK_NPM_FAIL" = "1" ]; then exit 19; fi
-  node -e 'const fs=require("fs"),path=require("path");const npmDir=path.join(process.env.PI_AGENT_DIR,"npm");const pkg=JSON.parse(fs.readFileSync(path.join(npmDir,"package.json")));for(const [name,spec] of Object.entries(pkg.dependencies)){if(name.startsWith("@earendil-works/")&&spec.startsWith("file:")){const target=path.resolve(npmDir,spec.slice(5));const dest=path.join(npmDir,"node_modules",name);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,"dir");}else if(!name.startsWith("@earendil-works/")){const dest=path.join(npmDir,"node_modules",name);fs.rmSync(dest,{recursive:true,force:true});fs.mkdirSync(dest,{recursive:true});fs.writeFileSync(path.join(dest,"package.json"),JSON.stringify({name,version:spec.replace(/^[~^]/,"")}));}}fs.writeFileSync(path.join(npmDir,"package-lock.json"),JSON.stringify({lockfileVersion:3,packages:{}},null,2)+"\\n");'
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const npmDir = process.cwd();
+    const args = process.argv.slice(2);
+    const pkg = JSON.parse(fs.readFileSync(path.join(npmDir, "package.json")));
+    const externalNames = Object.keys(pkg.dependencies).filter((name) => !name.startsWith("@earendil-works/"));
+    const lockFile = path.join(npmDir, "package-lock.json");
+    function lockData(dependencies, versions) {
+      const packages = { "": { name: pkg.name, dependencies } };
+      for (const name of externalNames) {
+        const version = versions[name];
+        packages["node_modules/" + name] = { version, integrity: "sha512-sandbox-" + version };
+      }
+      return { lockfileVersion: 3, packages };
+    }
+    if (args.includes("--package-lock-only")) {
+      const versions = Object.fromEntries(externalNames.map((name) => [name, pkg.dependencies[name]]));
+      fs.writeFileSync(lockFile, JSON.stringify(lockData(pkg.dependencies, versions), null, 2) + "\\n");
+      process.exit(0);
+    }
+    const hadLock = fs.existsSync(lockFile);
+    const lock = hadLock ? JSON.parse(fs.readFileSync(lockFile, "utf8")) : null;
+    function external(name, version) {
+      const dest = path.join(npmDir, "node_modules", name);
+      fs.rmSync(dest, { recursive: true, force: true });
+      fs.mkdirSync(dest, { recursive: true });
+      fs.writeFileSync(path.join(dest, "package.json"), JSON.stringify({
+        name,
+        version,
+        peerDependencies: { "@earendil-works/pi-coding-agent": ">=1.2.0" },
+      }));
+    }
+    for (const [name, spec] of Object.entries(pkg.dependencies)) {
+      if (name.startsWith("@earendil-works/") && spec.startsWith("file:")) {
+        const target = path.resolve(npmDir, spec.slice(5));
+        const dest = path.join(npmDir, "node_modules", name);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.symlinkSync(target, dest, "dir");
+      } else if (!name.startsWith("@earendil-works/")) {
+        external(name, lock?.packages?.["node_modules/" + name]?.version ?? spec.replace(/^[~^]/, ""));
+      }
+    }
+    if (!hadLock) {
+      const versions = Object.fromEntries(externalNames.map((name) => [name, pkg.dependencies[name].replace(/^[~^]/, "")]));
+      fs.writeFileSync(lockFile, JSON.stringify(lockData(pkg.dependencies, versions), null, 2) + "\\n");
+    }
+  ' "$@"
   printf 'Sandbox npm dependencies linked\\n'
   exit 0
 fi
@@ -151,6 +207,14 @@ if (scenario === "healthy" || scenario === "bundle") {
   };
   const result = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "update"], { env, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`cannot initialize healthy sandbox: ${result.stderr || result.stdout}`);
+  if (scenario === "bundle") {
+    write(path.join(agent, "install", "current-version"), "1.4.0\n");
+    const repaired = spawnSync(process.execPath, [
+      path.join(repo, "dist", "bin", "agentbrew.js"),
+      "init", "--expect", "repairable", "--mode", "repair", "--resource", "pi.host-links", "--apply",
+    ], { env, encoding: "utf8" });
+    if (repaired.status !== 0) throw new Error(`cannot prepare the bundle host-update scenario: ${repaired.stderr || repaired.stdout}`);
+  }
   write(path.join(root, "commands.log"), "");
 }
 
@@ -175,6 +239,15 @@ if (scenario === "bundle") {
     resources: { "npm:pi-subagents": { source: { type: "npm", spec: "^0.84.0" }, update: "compatible" } },
     override: ["npm:pi-subagents"],
   }, null, 2)}\n`);
+  write(path.join(root, "state", "ownership.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    resources: {
+      "pi.host": "manage",
+      "pi.host-links": "manage",
+      "herdr.pi-integration": "generate",
+      ...Object.fromEntries([...peers, "pi-subagents"].map((name) => [`npm:${name}`, "manage"])),
+    },
+  }, null, 2)}\n`, 0o600);
 }
 
 console.log(root);
