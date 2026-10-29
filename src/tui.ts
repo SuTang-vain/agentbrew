@@ -2,8 +2,10 @@ import { loadBundle } from "./bundle.js";
 import { bundlePlanCommand } from "./bundle-plan.js";
 import type { Context } from "./context.js";
 import { evaluateEnvironment, type EnvironmentEvaluation } from "./init.js";
+import { readOwnership } from "./ownership.js";
 import { doctorCommand, updateCommand } from "./plan.js";
 import { redact } from "./process.js";
+import { resolvedUpdateFingerprint } from "./providers/pi.js";
 import { sourceCommand } from "./source-cli.js";
 import { prepareContextSources, sourceInputError } from "./source-context.js";
 import { createTerminalStyle } from "./terminal.js";
@@ -78,6 +80,24 @@ function sourcesResult(context: Context): CommandResult {
   }
 }
 
+function updateCacheKey(base: Context): string | null {
+  const probe: Context = { ...base, layers: [...base.layers] };
+  try {
+    prepareContextSources(probe);
+  } catch {
+    return null;
+  }
+  if (probe.layers.length === 0) return null;
+  try {
+    const bundle = loadBundle(probe.layers);
+    if (!bundle) return null;
+    const ownership = readOwnership(probe);
+    return `${bundle.inputHash}:${resolvedUpdateFingerprint(probe, bundle)}:${JSON.stringify(ownership?.resources ?? null)}`;
+  } catch {
+    return null;
+  }
+}
+
 const defaultOperations: TuiOperations = {
   overview: async (context) => ({
     evaluation: evaluateEnvironment(context),
@@ -113,6 +133,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
     let ticker: NodeJS.Timeout | undefined;
     let controller: AbortController | undefined;
     let lastFrame = "";
+    let previewCache: { key: string; result: CommandResult; at: number } | undefined;
 
     const stopTicker = (): void => {
       if (ticker) clearInterval(ticker);
@@ -202,12 +223,13 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.scroll = 0;
       draw();
     };
-    const restore = (previous: { page: TuiPage; result?: CommandResult; evaluation?: EnvironmentEvaluation; sources?: CommandResult; scroll: number }): void => {
+    const restore = (previous: { page: TuiPage; result?: CommandResult; evaluation?: EnvironmentEvaluation; sources?: CommandResult; scroll: number; cachedAt?: number }): void => {
       model.page = previous.page;
       model.result = previous.result;
       model.evaluation = previous.evaluation;
       model.sources = previous.sources;
       model.scroll = previous.scroll;
+      model.cachedAt = previous.cachedAt;
       model.busy = false;
       model.busySince = undefined;
       model.notice = "read-only request cancelled";
@@ -218,15 +240,26 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       }
       draw();
     };
-    const activate = async (page: TuiPage): Promise<void> => {
+    const activate = async (page: TuiPage, options: { refresh?: boolean } = {}): Promise<void> => {
       if (page === "help") return openHelp();
       if (finished || model.busy) return;
+      const cacheKey = page === "update" ? updateCacheKey(live) : null;
+      if (page === "update" && !options.refresh && cacheKey && previewCache?.key === cacheKey) {
+        model.page = "update";
+        model.scroll = 0;
+        model.result = previewCache.result;
+        model.cachedAt = previewCache.at;
+        model.notice = undefined;
+        draw();
+        return;
+      }
       const previous = {
         page: model.page,
         result: model.result,
         evaluation: model.evaluation,
         sources: model.sources,
         scroll: model.scroll,
+        cachedAt: model.cachedAt,
       };
       const cancellation = new AbortController();
       controller = cancellation;
@@ -234,6 +267,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.page = page;
       model.scroll = 0;
       model.result = undefined;
+      model.cachedAt = undefined;
       model.notice = page === "update" ? "Resolving a dry-run; no resources will be changed…" : "Reading local state…";
       model.busy = true;
       model.busySince = Date.now();
@@ -264,6 +298,9 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       live.signal = undefined;
       if (cancellation.signal.aborted) return restore(previous);
       if (finished) return;
+      if (page === "update" && cacheKey && model.result?.status === "success") {
+        previewCache = { key: cacheKey, result: model.result, at: Date.now() };
+      }
       model.busy = false;
       model.busySince = undefined;
       model.notice = undefined;
@@ -314,7 +351,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         }
       }
       if (key.name === "r") {
-        void activate(model.page);
+        void activate(model.page, { refresh: true });
         return;
       }
       if (model.page === "overview") {

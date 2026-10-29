@@ -34,6 +34,7 @@ export interface TuiModel {
   scroll: number;
   notice?: string;
   returnPage?: TuiPage;
+  cachedAt?: number;
 }
 
 export interface RenderedTuiFrame {
@@ -184,6 +185,10 @@ export function renderTuiFrame(model: TuiModel, style: TerminalStyle, height: nu
     body = [style.paint(model.notice ?? "Loading read-only result…", "muted")];
   } else {
     body = wrappedResult(model.result, style);
+    if (model.cachedAt) {
+      const age = Math.max(0, Math.floor((Date.now() - model.cachedAt) / 1000));
+      body = [style.paint(`cached ${age}s ago · r refreshes`, "muted"), ...body];
+    }
     if (!model.busy && model.notice) body = [style.paint(model.notice, "warning"), ...body];
   }
 

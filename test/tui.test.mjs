@@ -254,6 +254,60 @@ test("Esc cancels an in-flight preview and restores the previous page", async (t
   assert.equal(await status, 0);
 });
 
+test("a successful preview is cached for the session and r refreshes it", async (t) => {
+  const f = fixture(t);
+  const file = layerFile(f);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir, layers: [`personal=${file}`] }, f.env());
+  let calls = 0;
+  const preview = {
+    schemaVersion: 1,
+    command: "update",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [],
+    differences: [],
+    checks: [],
+  };
+  const status = runTui(context, s.streams, {
+    update: async () => {
+      calls += 1;
+      return preview;
+    },
+  });
+  await settle();
+  s.input.write("4");
+  await settle();
+  assert.equal(calls, 1);
+  assert.doesNotMatch(currentFrame(s), /cached \d+s ago/);
+
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await settle();
+  s.input.write("4");
+  await settle();
+  assert.equal(calls, 1);
+  assert.match(currentFrame(s), /cached \d+s ago/);
+
+  s.input.write("r");
+  await settle();
+  assert.equal(calls, 2);
+  assert.doesNotMatch(currentFrame(s), /cached \d+s ago/);
+
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await settle();
+  const layer = JSON.parse(fs.readFileSync(file, "utf8"));
+  layer.resources["npm:pi-subagents"].source.spec = "^0.84.0";
+  fs.writeFileSync(file, JSON.stringify(layer, null, 2));
+  s.input.write("4");
+  await settle();
+  assert.equal(calls, 3);
+  s.input.write("q");
+  assert.equal(await status, 0);
+});
+
 test("a damaged registered binding fails update preview closed without native fallback", async (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.stateDir, { recursive: true });
