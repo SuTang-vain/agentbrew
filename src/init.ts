@@ -312,7 +312,7 @@ export function initResult(
     steps: [],
     differences: evaluation.differences,
     checks: evaluation.checks,
-    data: { assessment: evaluation.assessment },
+    data: { assessment: evaluation.assessment, herdr: evaluation.herdr },
   };
 }
 

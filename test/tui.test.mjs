@@ -9,6 +9,7 @@ import { createContext } from "../dist/context.js";
 import { createTerminalStyle, visibleWidth } from "../dist/terminal.js";
 import { runTui } from "../dist/tui.js";
 import { renderTuiFrame } from "../dist/tui-view.js";
+import { AGENTBREW_VERSION } from "../dist/version.js";
 import { fixture } from "./helpers.mjs";
 
 function session(f, extraEnv = {}) {
@@ -46,6 +47,15 @@ function currentFrame(s) {
   return stripVTControlCharacters(s.text().split("\x1b[H").at(-1));
 }
 
+async function waitForText(s, pattern) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (pattern.test(currentFrame(s))) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`TUI did not render ${pattern}: ${currentFrame(s)}`);
+}
+
 function layerFile(f) {
   const file = path.join(f.root, "personal.json");
   fs.writeFileSync(file, `${JSON.stringify({
@@ -62,6 +72,23 @@ function layerFile(f) {
   return file;
 }
 
+function targetRegistry(f) {
+  const remoteResult = path.join(f.root, "remote-result.json");
+  const assessment = f.run(["init", "--json"]);
+  assert.equal(assessment.status, 6, assessment.stderr);
+  fs.writeFileSync(remoteResult, assessment.stdout);
+  const file = path.join(f.root, "targets.json");
+  fs.writeFileSync(file, JSON.stringify({
+    schemaVersion: 1,
+    kind: "agentbrew-targets",
+    targets: [
+      { id: "linux-dev", connection: { type: "ssh", destination: "alice" } },
+      { id: "offline", connection: { type: "ssh", destination: "offline" } },
+    ],
+  }));
+  return { file, remoteResult };
+}
+
 function assertNoMutatingCommands(f) {
   assert.equal(f.commands().some((command) => command.startsWith("pi update")), false);
   assert.equal(f.commands().some((command) => command.startsWith("npm install")), false);
@@ -75,7 +102,7 @@ test("bare interactive commands enter a persistent read-only TUI and restore on 
     const s = session(f);
     const status = runCli([], s.streams);
     await settle();
-    assert.match(currentFrame(s), /Agentbrew/);
+    assert.ok(currentFrame(s).includes(`Agentbrew v${AGENTBREW_VERSION}`));
     assert.match(currentFrame(s), /READ ONLY/);
     assert.match(currentFrame(s), /Overview/);
     if (key === null) s.input.end();
@@ -97,22 +124,23 @@ test("Health, Differences, native Update preview, Sources, refresh, and Escape s
   const status = runCli([], s.streams);
   await settle();
 
-  s.input.write("\x1b[B\r");
+  s.input.write("2");
   await settle();
   assert.match(currentFrame(s), /Agentbrew · Health/);
-  assert.match(currentFrame(s), /result: unhealthy; changes: none/);
+  assert.match(currentFrame(s), /health: unhealthy · 13 failed · 1 warning\(s\) · 3 passed/);
+  assert.doesNotMatch(currentFrame(s), /^PASS /m);
   assertNoMutatingCommands(f);
 
   s.input.write("\x1b");
   await new Promise((resolve) => setTimeout(resolve, 30));
-  s.input.write("\x1b[B\r");
+  s.input.write("3");
   await settle();
   assert.match(currentFrame(s), /Agentbrew · Differences/);
   assert.match(currentFrame(s), /DIFF /);
 
   s.input.write("\x1b");
   await new Promise((resolve) => setTimeout(resolve, 30));
-  s.input.write("\x1b[B\r");
+  s.input.write("4");
   await settle();
   assert.match(currentFrame(s), /Agentbrew · Update preview/);
   assert.match(currentFrame(s), /PLAN Update Pi and configured extensions/);
@@ -126,7 +154,7 @@ test("Health, Differences, native Update preview, Sources, refresh, and Escape s
 
   s.input.write("\x1b");
   await new Promise((resolve) => setTimeout(resolve, 30));
-  s.input.write("\x1b[B\r");
+  s.input.write("5");
   await settle();
   assert.match(currentFrame(s), /Agentbrew · Sources/);
   assert.match(currentFrame(s), /sources: no per-target registration/);
@@ -176,7 +204,9 @@ test("Help returns to the cached page, digits jump directly, and previews report
     },
   });
   await settle();
-  s.input.write("\x1b[B\r");
+  s.input.write("2");
+  await settle();
+  s.input.write("v");
   await settle();
   const health = currentFrame(s);
   assert.match(health, /Agentbrew · Health/);
@@ -233,7 +263,9 @@ test("Esc cancels an in-flight preview and restores the previous page", async (t
     },
   });
   await settle();
-  s.input.write("\x1b[B\r");
+  s.input.write("2");
+  await settle();
+  s.input.write("v");
   await settle();
   assert.match(currentFrame(s), /health-1/);
 
@@ -368,7 +400,7 @@ test("write mode changes the safety line, menu description, and help", async (t)
   const status = runTui(context, s.streams, {}, { write: true });
   await settle();
   assert.match(currentFrame(s), /Writes only after confirmation/);
-  s.input.write("\x1b[B\x1b[B\x1b[B");
+  s.input.write("\x1b[B\x1b[B\x1b[B\x1b[B");
   await settle();
   assert.match(currentFrame(s), /apply only after confirmation/);
   s.input.write("?");
@@ -573,7 +605,7 @@ test("a damaged registered binding fails update preview closed without native fa
   const status = runCli([], s.streams);
   await settle();
   assert.match(currentFrame(s), /source error/);
-  s.input.write("\x1b[B\x1b[B\x1b[B\r");
+  s.input.write("4");
   await settle();
   const frame = currentFrame(s);
   assert.match(frame, /sources: registered/);
@@ -599,7 +631,7 @@ test("an asynchronous preview prevents reentry and settles before a requested ex
     },
   });
   await settle();
-  s.input.write("\x1b[B\x1b[B\x1b[B\r");
+  s.input.write("4");
   await settle();
   assert.equal(calls, 1);
   s.input.write("r\r\x1b[B\r");
@@ -668,7 +700,7 @@ test("TUI frames fit width and height, retain the selected item, and clamp scrol
   const model = {
     target: path.join(f.agentDir, "配置", "a-very-long-target-path"),
     page: "overview",
-    menuIndex: 6,
+    menuIndex: 7,
     busy: true,
     exitRequested: false,
     scroll: 0,
@@ -676,7 +708,7 @@ test("TUI frames fit width and height, retain the selected item, and clamp scrol
   const frame = renderTuiFrame(model, style, 12);
   assert.ok(frame.lines.length <= 12);
   assert.match(stripVTControlCharacters(frame.lines.join("\n")), /Quit/);
-  assert.match(stripVTControlCharacters(frame.lines.join("\n")), /\d+–7\/7 pages/);
+  assert.match(stripVTControlCharacters(frame.lines.join("\n")), /\d+–8\/8 pages/);
   for (const line of frame.lines) assert.ok(visibleWidth(line) <= 32);
   model.page = "help";
   model.busy = false;
@@ -734,4 +766,347 @@ test("raw-mode startup failure restores the cursor, screen, and input", async (t
   assert.match(s.text(), /\x1b\[\?25h\x1b\[\?1049l/);
   assert.match(s.errors(), /simulated raw-mode failure/);
   assert.equal(fs.existsSync(f.stateDir), false);
+});
+
+test("detail toggles reuse the current health result without another operation", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  let healthCalls = 0;
+  const status = runTui(context, s.streams, {
+    health: async () => {
+      healthCalls += 1;
+      return {
+        schemaVersion: 1,
+        command: "doctor",
+        status: "unhealthy",
+        target: { agentDir: f.agentDir },
+        changes: "none",
+        steps: [],
+        differences: [],
+        checks: [
+          { resource: "probe.pass", status: "pass", message: "passing detail" },
+          { resource: "probe.fail", status: "fail", message: "actionable failure" },
+          { resource: "probe.warn", status: "warn", message: "actionable warning" },
+        ],
+      };
+    },
+  });
+  await settle();
+  s.input.write("2");
+  await settle();
+  const summary = currentFrame(s);
+  assert.match(summary, /health: unhealthy · 1 failed · 1 warning\(s\) · 1 passed/);
+  assert.match(summary, /actionable failure/);
+  assert.match(summary, /actionable warning/);
+  assert.doesNotMatch(summary, /passing detail/);
+
+  s.input.write("v");
+  await settle();
+  assert.match(currentFrame(s), /PASS probe\.pass: passing detail/);
+  assert.match(currentFrame(s), /v summary/);
+  s.input.write("v");
+  await settle();
+  assert.doesNotMatch(currentFrame(s), /passing detail/);
+  assert.equal(healthCalls, 1);
+  s.input.write("q");
+  assert.equal(await status, 0);
+  assert.equal(fs.existsSync(f.stateDir), false);
+});
+
+test("long results retain their final line and support viewport navigation", async (t) => {
+  const f = fixture(t);
+  const output = new PassThrough();
+  output.isTTY = true;
+  output.columns = 60;
+  const style = createTerminalStyle(output, { NO_COLOR: "1" });
+  const result = {
+    schemaVersion: 1,
+    command: "doctor",
+    status: "success",
+    target: { agentDir: f.agentDir },
+    changes: "none",
+    steps: [],
+    differences: [],
+    checks: Array.from({ length: 30 }, (_, index) => ({ resource: `check-${index}`, status: "pass", message: "detail" })),
+  };
+  const last = renderTuiFrame({
+    target: f.agentDir,
+    page: "health",
+    menuIndex: 1,
+    busy: false,
+    exitRequested: false,
+    scroll: 1000,
+    showDetails: true,
+    result,
+  }, style, 8);
+  assert.match(last.lines.join("\n"), /PASS check-29: detail/);
+  assert.ok(last.lines.length <= 8);
+  assert.ok(last.pageSize > 0);
+
+  const s = session(f);
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, f.env());
+  const status = runTui(context, s.streams, {
+    health: async () => ({
+      ...result,
+      status: "unhealthy",
+      checks: Array.from({ length: 40 }, (_, index) => ({ resource: `check-${index}`, status: "warn", message: `health-row-${index}` })),
+    }),
+  });
+  await settle();
+  s.input.write("\x1b[F");
+  await settle();
+  assert.match(currentFrame(s), /› Quit/);
+  s.input.write("\x1b[H");
+  await settle();
+  assert.match(currentFrame(s), /› Overview/);
+  s.input.write("2");
+  await settle();
+  assert.match(currentFrame(s), /health-row-0/);
+  s.input.write("\x1b[F");
+  await settle();
+  assert.match(currentFrame(s), /health-row-39/);
+  s.input.write("\x1b[H");
+  await settle();
+  assert.match(currentFrame(s), /health-row-0/);
+  s.input.write("\x1b[6");
+  await settle();
+  s.input.write("~");
+  await settle();
+  assert.doesNotMatch(currentFrame(s), /health-row-0/);
+  s.input.write("\x1b[5~");
+  await settle();
+  assert.match(currentFrame(s), /health-row-0/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+  assert.deepEqual(s.input.rawModes, [true, false]);
+});
+
+test("long confirmations keep both actions visible and expose the final safety detail", (t) => {
+  const f = fixture(t);
+  const output = new PassThrough();
+  output.isTTY = true;
+  output.columns = 60;
+  const style = createTerminalStyle(output, { NO_COLOR: "1" });
+  const model = {
+    target: f.agentDir,
+    page: "confirm",
+    menuIndex: 3,
+    busy: false,
+    exitRequested: false,
+    scroll: 0,
+    writeEnabled: true,
+    confirmIndex: 1,
+    confirm: {
+      host: { from: "1.4.0", to: "1.5.0" },
+      herdr: true,
+      packages: Array.from({ length: 20 }, (_, index) => ({ id: `npm:package-${index}`, from: "1.0.0", to: "1.1.0" })),
+    },
+  };
+  const top = renderTuiFrame(model, style, 15);
+  assert.match(top.lines.join("\n"), /cannot be rolled back\s+automatically/);
+  assert.match(top.lines.join("\n"), / Update now/);
+  assert.match(top.lines.join("\n"), /› Cancel/);
+  const bottom = renderTuiFrame({ ...model, scroll: 1000 }, style, 15);
+  const text = bottom.lines.join("\n");
+  assert.match(text, /selftest\s+not run \(opt-in\)/);
+  assert.match(text, / Update now/);
+  assert.match(text, /› Cancel/);
+  assert.ok(bottom.lines.length <= 15);
+});
+
+test("Git sources distinguish local re-read from an explicit remote refresh", (t) => {
+  const f = fixture(t);
+  const output = new PassThrough();
+  output.isTTY = true;
+  output.columns = 60;
+  const style = createTerminalStyle(output, { NO_COLOR: "1" });
+  const frame = renderTuiFrame({
+    target: f.agentDir,
+    page: "sources",
+    menuIndex: 4,
+    busy: false,
+    exitRequested: false,
+    scroll: 0,
+    result: {
+      schemaVersion: 1,
+      command: "source",
+      status: "success",
+      target: { agentDir: f.agentDir },
+      changes: "none",
+      steps: [],
+      differences: [],
+      checks: [],
+      data: {
+        registered: true,
+        state: "current",
+        layers: [{
+          layer: "team",
+          file: "/private/cache/team.json",
+          git: { url: "https://example.invalid/config.git", path: "team.json", ref: "HEAD", commit: "a".repeat(40) },
+        }],
+      },
+    },
+  }, style, 23);
+  const text = frame.lines.join("\n");
+  assert.match(text, /sources: registered · current · 1 layer\(s\) · 1 Git/);
+  assert.match(text, /r only re-reads local\s+state/);
+  assert.match(text, /agentbrew source refresh/);
+  assert.match(text, /r re-read/);
+  assert.doesNotMatch(text, /v details/);
+});
+
+test("Targets start without SSH, check only the selection, and retain session evidence", async (t) => {
+  const f = fixture(t);
+  const { file, remoteResult } = targetRegistry(f);
+  const ssh = path.join(f.bin, "ssh");
+  fs.writeFileSync(ssh, `#!/bin/sh
+printf 'ssh %s\\n' "$*" >> "$MOCK_LOG"
+case "$*" in *offline*) exit 255 ;; esac
+cat "$MOCK_REMOTE_RESULT"
+`);
+  fs.chmodSync(ssh, 0o755);
+  fs.writeFileSync(f.log, "");
+  const s = session(f, { AGENTBREW_TARGETS_FILE: file, MOCK_REMOTE_RESULT: remoteResult });
+  const status = runCli(["--write"], s.streams);
+  await settle();
+  assert.match(currentFrame(s), /3 configured · 1 attention · 2 unknown/);
+  assert.equal(f.commands().some((line) => line.startsWith("ssh ")), false);
+
+  s.input.write("t");
+  await settle();
+  assert.match(currentFrame(s), /Agentbrew · Targets/);
+  assert.match(currentFrame(s), /linux-dev\s+ssh · unknown/);
+  assert.match(currentFrame(s), /no remote updates/);
+  s.input.write("\x1b[B");
+  await settle();
+  s.input.write("r");
+  await waitForText(s, /linux-dev\s+ssh · attention/);
+  assert.match(currentFrame(s), /linux-dev\s+ssh · attention/);
+  assert.match(currentFrame(s), /offline\s+ssh · unknown/);
+  assert.equal(f.commands().filter((line) => line.startsWith("ssh ")).length, 1);
+
+  s.input.write("v");
+  await settle();
+  assert.match(currentFrame(s), /connection: alice/);
+  s.input.write("2");
+  await settle();
+  assert.match(currentFrame(s), /Agentbrew · Health/);
+  s.input.write("t");
+  await settle();
+  assert.match(currentFrame(s), /linux-dev\s+ssh · attention/);
+  assert.equal(f.commands().filter((line) => line.startsWith("ssh ")).length, 1);
+
+  s.input.write("2");
+  await settle();
+  const changed = JSON.parse(fs.readFileSync(file, "utf8"));
+  changed.targets[0].connection.destination = "other";
+  fs.writeFileSync(file, JSON.stringify(changed));
+  s.input.write("t");
+  await settle();
+  assert.match(currentFrame(s), /linux-dev\s+ssh · unknown/);
+  s.input.write("r");
+  await waitForText(s, /linux-dev\s+ssh · attention/);
+  const sshCommands = f.commands().filter((line) => line.startsWith("ssh "));
+  assert.equal(sshCommands.length, 2);
+  assert.match(sshCommands[1], /-- other agentbrew init --json/);
+  s.input.write("q");
+  assert.equal(await status, 0);
+  assert.deepEqual(s.input.rawModes, [true, false]);
+  assert.equal(fs.existsSync(f.stateDir), false);
+  assertNoMutatingCommands(f);
+});
+
+test("cancelling a selected target check restores its previous state", async (t) => {
+  const f = fixture(t);
+  const { file } = targetRegistry(f);
+  const s = session(f, { AGENTBREW_TARGETS_FILE: file });
+  const context = createContext({ agentDir: f.agentDir, stateDir: f.stateDir }, s.streams.env);
+  let calls = 0;
+  const status = runTui(context, s.streams, {
+    checkTarget: async (scoped) => {
+      calls += 1;
+      return new Promise((_resolve, reject) => {
+        scoped.signal?.addEventListener("abort", () => {
+          const error = new Error("cancelled");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      });
+    },
+  }, { write: true });
+  await settle();
+  s.input.write("t");
+  await settle();
+  s.input.write("\x1b[B");
+  await settle();
+  s.input.write("r");
+  await settle();
+  assert.match(currentFrame(s), /Checking linux-dev only/);
+  assert.match(currentFrame(s), /linux-dev\s+ssh · checking/);
+  s.input.write("\x1b");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await settle();
+  assert.match(currentFrame(s), /linux-dev\s+ssh · unknown/);
+  assert.match(currentFrame(s), /read-only request cancelled/);
+  assert.equal(calls, 1);
+  s.input.write("q");
+  assert.equal(await status, 0);
+  assert.deepEqual(s.input.rawModes, [true, false]);
+  assertNoMutatingCommands(f);
+});
+
+test("reopening Targets preserves the local evidence timestamp", async (t) => {
+  const f = fixture(t);
+  const s = session(f);
+  const status = runCli([], s.streams);
+  await settle();
+  s.input.write("t");
+  await settle();
+  s.input.write("v");
+  await settle();
+  const first = currentFrame(s).match(/checkedAt: (\S+)/)?.[1];
+  assert.ok(first);
+
+  s.input.write("2");
+  await settle();
+  s.input.write("t");
+  await settle();
+  s.input.write("v");
+  await settle();
+  assert.equal(currentFrame(s).match(/checkedAt: (\S+)/)?.[1], first);
+  s.input.write("q");
+  assert.equal(await status, 0);
+  assert.equal(fs.existsSync(f.stateDir), false);
+});
+
+test("Overview keeps target evidence visible in a short terminal", (t) => {
+  const f = fixture(t);
+  const output = new PassThrough();
+  output.isTTY = true;
+  output.columns = 60;
+  const style = createTerminalStyle(output, { NO_COLOR: "1" });
+  const frame = renderTuiFrame({
+    target: f.agentDir,
+    page: "overview",
+    menuIndex: 0,
+    busy: false,
+    exitRequested: false,
+    scroll: 0,
+    evaluation: {
+      assessment: { classification: "healthy", host: { version: "1.4.0", source: "managed" } },
+      checks: [],
+      differences: [],
+      herdr: { available: true, version: "0.9.5", integration: "current" },
+    },
+    sources: { status: "success", data: { registered: false } },
+    targets: {
+      targets: [
+        { id: "local", connection: { type: "local" }, state: "healthy" },
+        { id: "linux-dev", connection: { type: "ssh", destination: "alice" }, state: "unknown" },
+        { id: "offline", connection: { type: "ssh", destination: "offline" }, state: "unknown" },
+      ],
+    },
+  }, style, 15);
+  assert.match(frame.lines.join("\n"), /Targets\s+3 configured · 1 healthy · 2 unknown/);
 });

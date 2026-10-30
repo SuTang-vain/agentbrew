@@ -8,9 +8,17 @@ import { redact } from "./process.js";
 import { resolvedUpdateFingerprint } from "./providers/pi.js";
 import { sourceCommand } from "./source-cli.js";
 import { prepareContextSources, sourceInputError } from "./source-context.js";
+import {
+  checkTarget as checkTargetOperation,
+  targetInventory,
+  targetSummaryFromEvaluation,
+  type TargetDescriptor,
+  type TargetInventory,
+  type TargetSummary,
+} from "./targets.js";
 import { createTerminalStyle } from "./terminal.js";
 import type { TerminalInput, TerminalMenuIO } from "./terminal-menu.js";
-import { renderTuiFrame, canApplyPreview, TUI_MENU_ITEMS, type TuiConfirmation, type TuiModel, type TuiPage } from "./tui-view.js";
+import { renderTuiFrame, canApplyPreview, canToggleDetails, TUI_MENU_ITEMS, type TuiConfirmation, type TuiModel, type TuiPage } from "./tui-view.js";
 import type { CommandResult } from "./types.js";
 
 export interface TuiIO extends TerminalMenuIO {
@@ -19,7 +27,9 @@ export interface TuiIO extends TerminalMenuIO {
 }
 
 export interface TuiOperations {
-  overview: (context: Context) => Promise<{ evaluation: EnvironmentEvaluation; sources: CommandResult }>;
+  overview: (context: Context) => Promise<{ evaluation: EnvironmentEvaluation; sources: CommandResult; targets: TargetInventory }>;
+  targets: (context: Context) => Promise<TargetInventory>;
+  checkTarget: (context: Context, target: TargetDescriptor) => Promise<TargetSummary>;
   health: (context: Context) => Promise<CommandResult>;
   changes: (context: Context) => Promise<CommandResult>;
   update: (context: Context) => Promise<CommandResult>;
@@ -100,11 +110,29 @@ function updateCacheKey(base: Context): string | null {
   }
 }
 
+function mergeTargets(
+  inventory: TargetInventory,
+  previous?: TargetInventory,
+  evaluation?: EnvironmentEvaluation,
+): TargetInventory {
+  const prior = new Map(previous?.targets.map((target) => [target.id, target]) ?? []);
+  return {
+    ...inventory,
+    targets: inventory.targets.map((target) => {
+      if (target.id === "local" && evaluation) return targetSummaryFromEvaluation(target, evaluation);
+      const previousTarget = prior.get(target.id);
+      return previousTarget && JSON.stringify(previousTarget.connection) === JSON.stringify(target.connection) ? previousTarget : target;
+    }),
+  };
+}
+
 const defaultOperations: TuiOperations = {
-  overview: async (context) => ({
-    evaluation: evaluateEnvironment(context),
-    sources: sourcesResult(context),
-  }),
+  overview: async (context) => {
+    const evaluation = evaluateEnvironment(context);
+    return { evaluation, sources: sourcesResult(context), targets: targetInventory(context) };
+  },
+  targets: async (context) => targetInventory(context),
+  checkTarget: (context, target) => checkTargetOperation(context, target),
   health: (context) => scopedCommand(context, "doctor", doctorCommand, { dryRun: false }),
   changes: (context) => scopedCommand(context, "diff", (scoped) => bundlePlanCommand(scoped, [], undefined, undefined), { dryRun: false }),
   update: (context) => scopedCommand(context, "update", updateCommand, { dryRun: true }),
@@ -136,10 +164,12 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
     target: context.agentDir,
     page: "overview",
     menuIndex: 0,
+    targetIndex: 0,
     busy: false,
     exitRequested: false,
     scroll: 0,
     writeEnabled: options.write === true,
+    showDetails: false,
   };
 
   return new Promise((resolve) => {
@@ -213,6 +243,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         const style = createTerminalStyle(output, io.env ?? process.env, true);
         const frame = renderTuiFrame(model, style, Math.max(5, (output.rows || 24) - 1));
         model.scroll = frame.scroll;
+        model.pageSize = frame.pageSize;
         const text = `\x1b[H\x1b[0J${frame.lines.join("\n")}\n`;
         if (text === lastFrame) return;
         lastFrame = text;
@@ -256,13 +287,16 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.scroll = 0;
       draw();
     };
-    const restore = (previous: { page: TuiPage; result?: CommandResult; evaluation?: EnvironmentEvaluation; sources?: CommandResult; scroll: number; cachedAt?: number }): void => {
+    const restore = (previous: { page: TuiPage; result?: CommandResult; evaluation?: EnvironmentEvaluation; sources?: CommandResult; targets?: TargetInventory; targetIndex?: number; scroll: number; cachedAt?: number; showDetails?: boolean }): void => {
       model.page = previous.page;
       model.result = previous.result;
       model.evaluation = previous.evaluation;
       model.sources = previous.sources;
+      model.targets = previous.targets;
+      model.targetIndex = previous.targetIndex;
       model.scroll = previous.scroll;
       model.cachedAt = previous.cachedAt;
+      model.showDetails = previous.showDetails;
       model.busy = false;
       model.busySince = undefined;
       model.notice = "read-only request cancelled";
@@ -282,6 +316,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         model.scroll = 0;
         model.result = previewCache.result;
         model.cachedAt = previewCache.at;
+        model.showDetails = false;
         model.notice = undefined;
         draw();
         return;
@@ -291,8 +326,11 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         result: model.result,
         evaluation: model.evaluation,
         sources: model.sources,
+        targets: model.targets,
+        targetIndex: model.targetIndex,
         scroll: model.scroll,
         cachedAt: model.cachedAt,
+        showDetails: model.showDetails,
       };
       const cancellation = options.cancellable === false ? undefined : new AbortController();
       if (cancellation) {
@@ -303,6 +341,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       model.scroll = 0;
       model.result = undefined;
       model.cachedAt = undefined;
+      model.showDetails = false;
       model.notice = page === "applied"
         ? "Applying the update; this writes to the target and cannot be cancelled…"
         : page === "update" ? "Resolving a dry-run; no resources will be changed…" : "Reading local state…";
@@ -315,6 +354,12 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
           const overview = await operations.overview(live);
           model.evaluation = overview.evaluation;
           model.sources = overview.sources;
+          model.targets = mergeTargets(overview.targets, model.targets, overview.evaluation);
+        } else if (page === "targets") {
+          const targets = await operations.targets(live);
+          model.targets = mergeTargets(targets, model.targets);
+          model.targetIndex = Math.max(0, Math.min(model.targetIndex ?? 0, model.targets.targets.length - 1));
+          model.scroll = (model.targetIndex ?? 0) * 2;
         } else if (page === "health") {
           model.result = await operations.health(live);
         } else if (page === "changes") {
@@ -355,6 +400,93 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
       }
       draw();
     };
+    const checkSelectedTarget = async (): Promise<void> => {
+      if (finished || model.busy || model.page !== "targets" || !model.targets) return;
+      if (model.targets.error) return activate("targets", { refresh: true });
+      const selected = model.targets.targets[model.targetIndex ?? 0];
+      if (!selected) return;
+      const previous = {
+        page: model.page,
+        result: model.result,
+        evaluation: model.evaluation,
+        sources: model.sources,
+        targets: model.targets,
+        targetIndex: model.targetIndex,
+        scroll: model.scroll,
+        cachedAt: model.cachedAt,
+        showDetails: model.showDetails,
+      };
+      const cancellation = new AbortController();
+      controller = cancellation;
+      live.signal = cancellation.signal;
+      model.targets = {
+        ...model.targets,
+        targets: model.targets.targets.map((target) => target.id === selected.id
+          ? { ...target, state: "checking" as const, checkedAt: undefined, errorKind: undefined }
+          : target),
+      };
+      model.notice = `Checking ${selected.id} only · read-only · no remote update…`;
+      model.busy = true;
+      model.busySince = Date.now();
+      startTicker();
+      draw();
+      let summary: TargetSummary;
+      try {
+        const refreshed = await operations.targets(live);
+        const current = mergeTargets(refreshed, model.targets);
+        const latest = current.targets.find((target) => target.id === selected.id);
+        if (!latest || JSON.stringify(latest.connection) !== JSON.stringify(selected.connection)) {
+          controller = undefined;
+          live.signal = undefined;
+          model.targets = current;
+          model.busy = false;
+          model.busySince = undefined;
+          model.notice = "Target registry changed; review the selection before checking";
+          stopTicker();
+          if (model.exitRequested) {
+            finish(requestedExitCode);
+            return;
+          }
+          draw();
+          return;
+        }
+        model.targets = current;
+        summary = await operations.checkTarget(live, latest);
+      } catch (error) {
+        controller = undefined;
+        live.signal = undefined;
+        if (cancellation.signal.aborted) return restore(previous);
+        finish(1, error);
+        return;
+      }
+      controller = undefined;
+      live.signal = undefined;
+      if (cancellation.signal.aborted) return restore(previous);
+      if (finished) return;
+      model.targets = {
+        ...model.targets,
+        targets: model.targets.targets.map((target) => target.id === summary.id ? summary : target),
+      };
+      model.busy = false;
+      model.busySince = undefined;
+      model.notice = undefined;
+      stopTicker();
+      if (model.exitRequested) {
+        finish(requestedExitCode);
+        return;
+      }
+      draw();
+    };
+    const scrollResult = (name?: string): boolean => {
+      const pageSize = Math.max(1, model.pageSize ?? 1);
+      if (name === "home") model.scroll = 0;
+      else if (name === "end") model.scroll = Number.MAX_SAFE_INTEGER;
+      else if (name === "pageup" || name === "pagedown") {
+        model.scroll = Math.max(0, model.scroll + (name === "pageup" ? -pageSize : pageSize));
+      } else return false;
+      draw();
+      return true;
+    };
     const onKeypress = (text: string, key: { name?: string; ctrl?: boolean }): void => {
       if (finished || !key) return;
       if ((key.ctrl && key.name === "c") || key.name === "q") {
@@ -392,6 +524,7 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         return;
       }
       if (model.page === "confirm") {
+        if (scrollResult(key.name)) return;
         if (key.name === "up" || key.name === "down") {
           model.confirmIndex = (model.confirmIndex ?? 1) === 0 ? 1 : 0;
           draw();
@@ -414,23 +547,39 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         openConfirm();
         return;
       }
+      if (key.name === "t") {
+        model.menuIndex = TUI_MENU_ITEMS.findIndex((item) => item.id === "targets");
+        if (model.page !== "targets") void activate("targets");
+        return;
+      }
+      if (key.name === "v" && (model.page === "targets" || (canToggleDetails(model.result)
+        && ["health", "changes", "update", "sources", "applied"].includes(model.page)))) {
+        model.showDetails = !model.showDetails;
+        draw();
+        return;
+      }
       if (/^[1-9]$/.test(text)) {
         const direct = Number(text);
-        if (direct <= TUI_MENU_ITEMS.length - 1) {
-          const target = TUI_MENU_ITEMS[direct - 1]!;
-          model.menuIndex = direct - 1;
-          if (target.id === "help") openHelp();
-          else if (target.id !== "quit") void activate(target.id);
+        const pages: TuiPage[] = ["overview", "health", "changes", "update", "sources", "help"];
+        const page = pages[direct - 1];
+        if (page) {
+          model.menuIndex = TUI_MENU_ITEMS.findIndex((item) => item.id === page);
+          if (page === "help") openHelp();
+          else void activate(page);
           return;
         }
       }
       if (key.name === "r") {
-        if (model.page === "applied") void activate("update", { refresh: true });
+        if (model.page === "targets") void checkSelectedTarget();
+        else if (model.page === "applied") void activate("update", { refresh: true });
         else void activate(model.page, { refresh: true });
         return;
       }
       if (model.page === "overview") {
-        if (key.name === "up") {
+        if (key.name === "home" || key.name === "end") {
+          model.menuIndex = key.name === "home" ? 0 : TUI_MENU_ITEMS.length - 1;
+          draw();
+        } else if (key.name === "up") {
           model.menuIndex = (model.menuIndex + TUI_MENU_ITEMS.length - 1) % TUI_MENU_ITEMS.length;
           draw();
         } else if (key.name === "down") {
@@ -444,6 +593,19 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         }
         return;
       }
+      if (model.page === "targets") {
+        if (["up", "down", "home", "end"].includes(key.name ?? "")) {
+          const count = model.targets?.targets.length ?? 0;
+          if (count > 0) {
+            const current = model.targetIndex ?? 0;
+            model.targetIndex = key.name === "home" ? 0 : key.name === "end" ? count - 1 : (current + (key.name === "up" ? count - 1 : 1)) % count;
+            model.scroll = model.targetIndex * 2;
+            draw();
+          }
+        } else if (key.name === "pageup" || key.name === "pagedown") scrollResult(key.name);
+        return;
+      }
+      if (scrollResult(key.name)) return;
       if (key.name === "up" || key.name === "down") {
         model.scroll = Math.max(0, model.scroll + (key.name === "up" ? -1 : 1));
         draw();
@@ -455,7 +617,12 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
         clearTimeout(escapeTimer);
         escapeTimer = undefined;
       }
-      const arrows = ["\x1b[A", "\x1b[B", "\x1bOA", "\x1bOB"];
+      const sequences = [
+        ["\x1b[A", "up"], ["\x1bOA", "up"], ["\x1b[B", "down"], ["\x1bOB", "down"],
+        ["\x1b[5~", "pageup"], ["\x1b[6~", "pagedown"],
+        ["\x1b[H", "home"], ["\x1bOH", "home"], ["\x1b[1~", "home"], ["\x1b[7~", "home"],
+        ["\x1b[F", "end"], ["\x1bOF", "end"], ["\x1b[4~", "end"], ["\x1b[8~", "end"],
+      ] as const;
       while (inputBuffer.length > 0) {
         if (inputBuffer[0] !== "\x1b") {
           const character = inputBuffer[0]!;
@@ -465,13 +632,13 @@ export function runTui(context: Context, io: TuiIO, overrides: Partial<TuiOperat
           else onKeypress(character, { name: character });
           continue;
         }
-        const arrow = arrows.find((sequence) => inputBuffer.startsWith(sequence));
-        if (arrow) {
-          inputBuffer = inputBuffer.slice(arrow.length);
-          onKeypress("", { name: arrow.endsWith("A") ? "up" : "down" });
+        const sequence = sequences.find(([value]) => inputBuffer.startsWith(value));
+        if (sequence) {
+          inputBuffer = inputBuffer.slice(sequence[0].length);
+          onKeypress("", { name: sequence[1] });
           continue;
         }
-        if (inputBuffer.length < 3 && arrows.some((sequence) => sequence.startsWith(inputBuffer))) break;
+        if (sequences.some(([value]) => value.startsWith(inputBuffer))) break;
         inputBuffer = inputBuffer.slice(1);
         onKeypress("", { name: "escape" });
       }

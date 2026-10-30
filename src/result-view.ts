@@ -1,6 +1,19 @@
 import type { TerminalStyle } from "./terminal.js";
 import type { CommandResult } from "./types.js";
 
+function targetLine(summary: any): string {
+  const evidence = [
+    summary.state,
+    summary.pi ? `Pi ${summary.pi}` : undefined,
+    summary.herdr ? `herdr ${summary.herdr}` : undefined,
+    summary.failures !== undefined ? `${summary.failures} failed` : undefined,
+    summary.warnings !== undefined ? `${summary.warnings} warning(s)` : undefined,
+    summary.differences !== undefined ? `${summary.differences} difference(s)` : undefined,
+    summary.errorKind ?? summary.classification ?? "not checked",
+  ].filter(Boolean).join(" · ");
+  return `TARGET ${summary.id} ${summary.connection.type} · ${evidence}`;
+}
+
 export function renderResult(result: CommandResult, verbose: boolean, style?: TerminalStyle): string {
   const lines = [`target: ${result.target.agentDir}`];
   const data = result.data as any;
@@ -12,6 +25,9 @@ export function renderResult(result: CommandResult, verbose: boolean, style?: Te
       lines.push(`SOURCE ${layer.layer} ${layer.file}`);
       if (layer.git) lines.push(`  git ${layer.git.url}#${layer.git.path} (${layer.git.ref} ${layer.git.commit})`);
     }
+  }
+  if (result.command === "target" && data) {
+    for (const summary of data.summary ? [data.summary] : data.targets ?? []) lines.push(targetLine(summary));
   }
   if (result.command === "inspect" && data) {
     if (data.pi?.host) lines.push(`pi: ${data.pi.host.version} (${data.pi.host.source})`);

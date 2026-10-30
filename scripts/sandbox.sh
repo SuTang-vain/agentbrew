@@ -38,6 +38,9 @@ export XDG_CACHE_HOME="$AGENTBREW_SANDBOX/cache"
 export XDG_STATE_HOME="$AGENTBREW_SANDBOX/xdg-state"
 export PATH="$AGENTBREW_SANDBOX/bin:$PATH"
 export PS1="(agentbrew-sandbox) \u@\h:\w\\$ "
+if [[ "$SCENARIO" == targets ]]; then
+  export AGENTBREW_TARGETS_FILE="$AGENTBREW_SANDBOX/targets.json"
+fi
 
 METADATA_PID=""
 if [[ "$SCENARIO" =~ ^(bundle|release|git|artifact-failure)$ ]]; then
@@ -84,7 +87,7 @@ Non-interactive Repair example for the default existing scenario:
   agentbrew init --expect repairable --mode repair \
     --resource pi.host-links --resource herdr.pi-integration --apply
 
-Available scenarios: existing, empty, healthy, broken, no-host, bundle, release, git, artifact-failure.
+Available scenarios: existing, empty, healthy, broken, no-host, bundle, release, git, artifact-failure, targets.
 Start with: npm run sandbox -- --scenario empty
 
 Useful files:
@@ -150,6 +153,18 @@ if [[ "$SCENARIO" == artifact-failure ]]; then
 Artifact failure scenario:
   agentbrew update --dry-run
   agentbrew update             # stops before Pi/npm/herdr execution
+  cat "$AGENTBREW_SANDBOX/commands.log"
+EOF
+fi
+
+if [[ "$SCENARIO" == targets ]]; then
+  cat <<'EOF'
+
+Read-only Targets scenario:
+  agentbrew                  # press t, select a target, then r to check only it
+  agentbrew target list
+  agentbrew target check linux-dev
+  agentbrew target check offline
   cat "$AGENTBREW_SANDBOX/commands.log"
 EOF
 fi

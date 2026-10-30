@@ -9,7 +9,7 @@ if (root !== path.join(repo, ".sandbox")) throw new Error("unsafe sandbox path")
 const args = process.argv.slice(2);
 const scenarioIndex = args.indexOf("--scenario");
 const scenario = scenarioIndex === -1 ? "existing" : args[scenarioIndex + 1];
-if (!["existing", "empty", "healthy", "broken", "no-host", "bundle", "release", "git", "artifact-failure"].includes(scenario)) {
+if (!["existing", "empty", "healthy", "broken", "no-host", "bundle", "release", "git", "artifact-failure", "targets"].includes(scenario)) {
   throw new Error(`unknown sandbox scenario: ${scenario}`);
 }
 if (fs.existsSync(root) && (!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink())) {
@@ -198,7 +198,7 @@ printf 'unsupported sandbox herdr command\\n' >&2
 exit 2
 `);
 
-const managedScenario = ["healthy", "bundle", "release", "git", "artifact-failure"].includes(scenario);
+const managedScenario = ["healthy", "bundle", "release", "git", "artifact-failure", "targets"].includes(scenario);
 const env = {
   ...process.env,
   AGENTBREW_SANDBOX: root,
@@ -322,6 +322,28 @@ if (scenario === "artifact-failure") {
   }, null, 2)}\n`);
   const registered = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "source", "set", "--layer", `personal=${path.join(root, "layers", "personal.json")}`], { env, encoding: "utf8" });
   if (registered.status !== 0) throw new Error(`cannot register the artifact-failure layer: ${registered.stderr || registered.stdout}`);
+}
+
+if (scenario === "targets") {
+  const assessment = spawnSync(process.execPath, [path.join(repo, "dist", "bin", "agentbrew.js"), "init", "--json"], { env, encoding: "utf8" });
+  if (assessment.status !== 6) throw new Error(`cannot prepare the remote target assessment: ${assessment.stderr || assessment.stdout}`);
+  write(path.join(root, "remote-result.json"), assessment.stdout);
+  write(path.join(root, "targets.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    kind: "agentbrew-targets",
+    targets: [
+      { id: "linux-dev", connection: { type: "ssh", destination: "alice" } },
+      { id: "offline", connection: { type: "ssh", destination: "offline" } },
+    ],
+  }, null, 2)}\n`);
+  executable(path.join(bin, "ssh"), `#!/bin/sh
+printf 'ssh %s\\n' "$*" >> "$MOCK_LOG"
+case "$*" in
+  *offline*) printf 'sandbox transport failure\\n' >&2; exit 255 ;;
+esac
+cat "$AGENTBREW_SANDBOX/remote-result.json"
+`);
+  write(path.join(root, "commands.log"), "");
 }
 
 console.log(root);

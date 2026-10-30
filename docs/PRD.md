@@ -1,11 +1,11 @@
 # Agentbrew 产品需求文档
 
-- 文档状态：Draft v0.12
+- 文档状态：Draft v0.14
 - 文档目的：定义产品方向、首版需求、执行语义与验收边界
 - 适用阶段：M1a–M3 的设计、开发与评审
 - 实现语言：TypeScript + Node.js
-- 实现状态：M1a、M1b、M2a、M2b-0、M2b-1、M2b-2 及 M2c 已实现；后续里程碑仍为设计目标
-- 尚未冻结：Provider 通用接口字段；M2a 本地 layer schema v1、Bundle Release schema v1、source registration schema v1/v2 已冻结
+- 实现状态：M1a、M1b、M2a、M2b-0、M2b-1、M2b-2、M2c 及 M3a 已实现；其余远程交付里程碑仍为设计目标
+- 尚未冻结：Provider 通用接口字段；M2a 本地 layer schema v1、Bundle Release schema v1、source registration schema v1/v2、target registry schema v1 已冻结
 
 本文使用“必须”“应”“可”三个要求级别：“必须”表示验收阻塞项，“应”表示无充分理由不得偏离的要求，“可”表示按场景启用的能力。
 
@@ -277,17 +277,19 @@ Agentbrew 首先是 Pi/herdr 环境调节与健康控制面，后续依据真实
 - 无子命令、没有 JSON/init/其他执行选项且终端支持 raw mode 时，`agentbrew` 必须进入前台常驻 TUI；`--agent-dir`、`--state-dir` 和 `--layer` 可以指定本次上下文。`--write` 只能用于该无子命令 TTY 入口，不得与子命令、JSON 或 init/其他执行选项组合。非 TTY 裸命令继续输出帮助，非 TTY `--write` 返回用法错误；显式 `init` 和现有脚本调用保持不变。
 - 不支持视觉终端的交互环境，普通裸命令使用既有 line-oriented init fallback；`--write` 不可用时必须返回用法错误，不得在 fallback 中隐式写入。`NO_COLOR` 只关闭颜色，不得关闭可用 TUI。
 - TUI 是用户前台进程，不是 daemon，不得后台自更新或扩大第 9 节的权限边界。
-- 页面固定为 Overview、Health、Differences、Update preview、Sources 和 Help。Help 必须列出其他真实写操作对应的明确 CLI 命令，不得把预览描述为已经执行。
-- 无论是否传入 `--write`，首屏都只能执行本地只读环境评估，展示目标、Pi/herdr、环境分类、健康与差异摘要、来源和安全边界。启动及普通刷新不得联网 resolve、写 state、获取 operation lock、执行真实更新或 selftest。
+- 页面固定为 Overview、Targets、Health、Differences、Update preview、Sources 和 Help。Help 必须列出其他真实写操作对应的明确 CLI 命令，不得把预览或远程检查描述为已经执行更新。
+- 无论是否传入 `--write`，首屏都只能执行本地只读环境评估，标题显示与 `--version` 同源的 Agentbrew 自身版本，并展示目标、Pi/herdr、环境分类、健康与差异摘要、来源、目标计数和安全边界。启动及普通刷新不得联网 resolve、发起 SSH、写 state、获取 operation lock、执行真实更新或 selftest。
 - Health、Differences 和 Sources 必须分别复用 doctor、只读 diff 和 source list 的 CommandResult，不复制版本、健康或来源裁决。Update preview 必须使用独立的 `dryRun=true` context 调用既有 update 流程，不能把 dry-run 或 selftest 状态泄漏到其他页面。
-- 显式 layer 始终优先于注册来源；注册来源在每次 TUI 操作前重新读取和校验。绑定损坏时不得使用上一次成功内容，也不得回退原生批量更新。
-- 方向键和 Enter 用于导航，`r` 刷新、`Esc` 返回、`q`/Ctrl+C 退出。同一时刻只允许一个操作，重复按键不得重复启动。只读异步预览可以用 Esc 中止元数据请求并恢复原页面；操作进行中的退出请求必须等待操作 settled 后清理，不得宣称取消或回滚。
-- 渲染必须适应 columns/rows 变化，支持内容滚动、长路径中间截断和窄终端单列；不得依赖固定宽度或复杂鼠标操作。
+- Health、Differences 和 Sources 首行必须分别显示健康计数、差异数量和来源状态；默认简洁视图保留 FAIL/WARN、DIFF、计划与执行步骤，隐藏常规 PASS 和详细解析证据。`v` 只切换当前结果的简洁/完整视图，不得重新执行操作、联网或写 state；Help 往返及取消预览恢复原页面时保留详情状态。
+- Targets 必须区分 unknown、checking、healthy、attention、offline、unavailable 和 error，不得把未检查或离线计入健康。`t` 打开页面，↑/↓ 选择，`r` 只检查当前目标，`v` 展开允许公开的连接和检查详情；结果只保留在会话内，其他目标状态不得被覆盖。远程写操作即使在 `--write` 下也不得开放。
+- 显式 layer 始终优先于注册来源；注册来源在每次 TUI 操作前重新读取和校验。绑定损坏时不得使用上一次成功内容，也不得回退原生批量更新。Sources 的 `r` 只能重读本机绑定和已记录 commit，必须提示 `agentbrew source refresh` 才能前进 Git 远端，不得把两者混称。
+- 方向键和 Enter 用于导航，PageUp/PageDown 按视口滚动，Home/End 到菜单或结果首尾，`r` 刷新、`Esc` 返回、`q`/Ctrl+C 退出；数字 1–6 保留既有页面映射，Targets 只使用 `t`。同一时刻只允许一个操作，重复按键不得重复启动。只读异步预览或单目标 SSH 检查可以用 Esc 中止并恢复原页面；操作进行中的退出请求必须等待操作 settled 后清理，不得宣称取消或回滚。
+- 渲染必须适应 columns/rows 变化，支持内容滚动、长路径中间截断和窄终端单列；不得依赖固定宽度或复杂鼠标操作。溢出提示必须独占显示行，不得覆盖最后一项内容；最大滚动位置必须能读到真正的末行。
 - 正常退出、输入结束、启动失败和渲染异常均必须幂等恢复 raw mode、光标和屏幕，移除本次会话监听器并输出简短关闭摘要；关闭摘要必须区分从未尝试写入与已经尝试写入。
 - TUI 正常退出返回 0，页面内健康或更新结果不直接改变工作台退出码；显式子命令的结构化结果和退出语义不变，自动化不得依赖交互工作台的页面结果代替结构化命令结果。
-- 默认模式不得提供可执行的写入口，不得执行 init、typed-plan apply、真实 update、selftest、source set/clear、Reset、Agentbrew 自更新或其他写操作。Help 可以说明写命令，但说明本身不得构成授权。
-- `--write` 只为成功且包含 Pi 宿主或外部 npm 包版本更新的 resolved Bundle 预览启用 `u apply`。原生预览、失败或阻塞预览、无版本更新及仅修复预览不得从 TUI 直接执行；这些场景继续使用明确的 CLI 命令。
-- `u apply` 必须先进入确认页，列出宿主与包的版本变化、计划中的 herdr 集成重建、selftest 不运行以及不可自动回滚；默认选中 Cancel，Cancel 或 Esc 不得产生写入。
+- 默认模式不得提供可执行的写入口，不得执行 init、typed-plan apply、真实 update、selftest、source set/refresh/clear、Reset、Agentbrew 自更新或其他写操作。Help 可以说明写命令，但说明本身不得构成授权。
+- `--write` 只为本机 target 上成功且包含 Pi 宿主或外部 npm 包版本更新的 resolved Bundle 预览启用 `u apply`，不得授权任何远程写操作。原生预览、失败或阻塞预览、无版本更新及仅修复预览不得从 TUI 直接执行；这些场景继续使用明确的 CLI 命令。
+- `u apply` 必须先进入确认页，列出宿主与包的版本变化、计划中的 herdr 集成重建、selftest 不运行以及不可自动回滚；Update now/Cancel 必须固定在包列表之外，长列表滚动时仍同时可见。默认选中 Cancel，Cancel 或 Esc 不得产生写入。
 - 确认后必须通过既有 update 流程以 `dryRun=false` 重新解析并复核当前来源和本机状态，预览缓存不得作为执行授权；执行仍须遵守第 8.2 节和第 19 节的授权、加锁、快照及健康验证要求，不得隐式运行 selftest。写入期间不可取消，退出请求等待操作结束；结束后展示真实结果，并在宿主或扩展变化时提示重启 Pi。终端恢复不代表回滚。
 
 ### FR-09：Agent 辅助规范化（P0 基础能力，P1 引导流程）
@@ -543,7 +545,9 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 
 支持视觉终端的裸 `agentbrew` 进入可导航工作台，首屏不创建 state/lock、不联网解析、不执行更新或 selftest。用户能够查看 Health、Differences、Sources 和 Update preview 的 dry-run，损坏注册来源不得回退原生更新；连续刷新和重复确认不得并发启动操作。默认模式没有可执行的写入口，说明写命令不会触发授权或修改。
 
-`agentbrew --write` 仅对无子命令的支持视觉 TTY 有效。成功且包含宿主或 npm 包版本更新的 resolved Bundle 预览可以通过 `u apply` 进入确认页；原生、失败、阻塞、无版本更新和仅修复预览没有 TUI apply 入口。确认页默认 Cancel，取消或 Esc 不产生写入；确认后重新解析并复核当前来源和本机状态，不执行 selftest，写入期间不可取消，结束后展示实际结果并按需提示重启 Pi。
+结果首屏显示领域摘要并隐藏常规 PASS/详细证据，FAIL/WARN 和差异仍可发现；`v` 展开已有结果而不重新查询。PageUp/PageDown、Home/End 可导航长结果，最大滚动位置能看到末行；Sources 的本地 re-read 不会触发 Git refresh。
+
+`agentbrew --write` 仅对无子命令的支持视觉 TTY 有效。成功且包含宿主或 npm 包版本更新的 resolved Bundle 预览可以通过 `u apply` 进入确认页；原生、失败、阻塞、无版本更新和仅修复预览没有 TUI apply 入口。确认页默认 Cancel，且 Update now/Cancel 在长包列表滚动时始终同时可见；取消或 Esc 不产生写入。确认后重新解析并复核当前来源和本机状态，不执行 selftest，写入期间不可取消，结束后展示实际结果并按需提示重启 Pi。
 
 正常退出、输入结束及终端异常均恢复终端；关闭摘要不得把已尝试写入误报为未修改。非 TTY、JSON 和显式子命令行为保持兼容，页面健康或更新结果不替代显式命令的结构化结果与退出码。
 
@@ -582,14 +586,17 @@ Agent 能将散乱配置整理为所有权明确的收养提案，但不能直�
 ### M2c：常驻交互工作台（默认只读，已实现）
 
 - 裸 `agentbrew` 在支持视觉交互的终端进入前台 TUI，提供 Overview、Health、Differences、Update preview、Sources 和 Help；复用统一来源与 CommandResult，支持刷新、滚动、resize、防重入和可靠终端恢复。非 TTY、JSON 和显式子命令保持兼容。
+- Health/Differences/Sources 使用领域摘要，默认隐藏常规 PASS 和详细证据，`v` 在不重新执行操作的情况下展开详情。PageUp/PageDown/Home/End 支持长列表导航，滚动状态行不覆盖末行；Sources 的 `r re-read` 与显式 `source refresh` 明确区分。
 - Help 是非破坏性覆盖层，Esc 返回原页面并复用缓存结果；数字键直达页面，窗口化菜单显示位置指示。元数据预览按请求显示进度与已用时间，Esc 可中止在途只读预览并恢复原页面。
 - 会话内缓存最近一次成功的预览并显示其年龄，`r` 强制重新解析；缓存不落盘，其键包含 layer 哈希、本机指纹与 ownership，任一变化即失效。预览页明确区分 ready、up-to-date、repairs planned 与 update 计数；无注册来源时解释如何获得可解析计划，而不是仅展示 native 步骤模板。
-- `agentbrew --write` 只为成功且包含宿主或 npm 包版本更新的 resolved Bundle 预览开放 `u apply`。确认页列出宿主与包的版本变化、计划中的 herdr 集成重建、selftest 不运行和不可自动回滚，默认选中 Cancel；确认后重新解析并复核当前状态，不得把预览缓存当作授权。写入期间不可取消，结束后展示结果并在需要时提示重启 Pi。
-- 未传 `--write` 时不得提供可执行的写入口；Help 中的写命令说明不构成授权。即使传入 `--write`，也只有前项确认的 resolved Bundle update 可以写入；init、typed-plan apply、selftest、source set/clear、Reset、Agentbrew 自更新等其他操作仍不得从 TUI 执行。
+- `agentbrew --write` 只为成功且包含宿主或 npm 包版本更新的 resolved Bundle 预览开放 `u apply`。确认页列出宿主与包的版本变化、计划中的 herdr 集成重建、selftest 不运行和不可自动回滚，Update now/Cancel 固定可见且默认选中 Cancel；确认后重新解析并复核当前状态，不得把预览缓存当作授权。写入期间不可取消，结束后展示结果并在需要时提示重启 Pi。
+- 未传 `--write` 时不得提供可执行的写入口；Help 中的写命令说明不构成授权。即使传入 `--write`，也只有前项确认的 resolved Bundle update 可以写入；init、typed-plan apply、selftest、source set/refresh/clear、Reset、Agentbrew 自更新等其他操作仍不得从 TUI 执行。
 
 ### M3：管理员 SSH 多用户交付
 
-加入逐用户连接、高权限显式切换、目标独立解析与锁、失败隔离、脱敏摘要和共享运行时保护。
+- **M3a 已实现**：local/SSH 目标注册、Overview 目标摘要、Targets 页面，以及 CLI/TUI 显式单目标只读检查；脱敏证据仅存于当前会话，启动不连接 SSH，不开放远程更新。
+- **M3b 待实现**：单目标远程聚焦、独立 diff/resolve/update preview 与显式更新；必须复用目标端解析、锁和 doctor，不得复用控制端计划。
+- **M3c 待实现**：明确选择的多目标 Deploy、高权限显式切换、受控并发、失败隔离和共享运行时保护。
 
 ### M4：按需求扩展生态
 
@@ -926,3 +933,44 @@ agentbrew update
 - 默认 state 按 agentDir 派生；显式让多个 target 共用 `--state-dir` 会共享 lock、source 和 result 文件，多用户部署必须禁止。人员隔离必须使用独立 Unix 用户、HOME、agentDir、stateDir 和私有凭据。
 - 单端管理多端在架构上采用控制端逐用户 SSH 调用目标 Agentbrew，各目标独立读取、解析、加锁、执行和 doctor；不得下发跨用户复用的解析计划或集中读取私有配置。
 - M3 远程更新必须要求 resolved + managed Pi，禁止原生批量更新和共享可写宿主。selftest、代码信任、权限提升和远程批量执行分别授权，高权限切换不能声称阻止 root 读取用户文件。
+
+## 22. M3a 只读目标注册与单目标检查契约
+
+### 22.1 Target registry schema v1
+
+控制端隐式提供 `local`，远程目标来自 `AGENTBREW_TARGETS_FILE`，未设置时读取 `$XDG_CONFIG_HOME/agentbrew/targets.json` 或 `$HOME/.config/agentbrew/targets.json`。
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "agentbrew-targets",
+  "targets": [
+    { "id": "linux-dev", "connection": { "type": "ssh", "destination": "alice@build.example.com" } }
+  ]
+}
+```
+
+- 清单缺失表示 local-only。文件必须是普通非 symlink JSON，最大 64 KiB、最多 64 个远程目标；未知字段、重复或保留别名、非法 destination、损坏内容必须失败关闭，不得静默回退。
+- destination 只允许单个安全的 SSH 用户/主机形式，不允许空白、控制字符、选项或任意命令字段。自定义端口和高级选项由目标用户自己的 SSH config 提供，凭据不得进入清单。
+- `agentbrew target list` 只读取清单。`agentbrew target check <id>` 必须要求明确 id，未知目标失败，不默认检查全部目标。
+
+### 22.2 只读检查与脱敏证据
+
+本机检查复用 `evaluateEnvironment`。SSH 检查只通过参数数组执行 `ssh -T -o BatchMode=yes -o ConnectTimeout=8 -- <destination> agentbrew init --json`，不得经过本地 shell，不得提示密码或自动提升权限。
+
+- 目标端 `init --json` 只执行评估，不运行 update、selftest、source refresh、安装或写锁。其正常只读退出可以是 0 或 `not-executed` 对应的 6；必须验证结构化结果，不能仅凭退出码宣称成功或离线。
+- 控制端严格校验 schema、command、assessment、checks、differences 和 herdr 字段。结果只裁剪为 id、连接类型、状态、分类、Pi/herdr 公开版本、健康/差异计数、checkedAt 和错误类别。
+- 原始 stdout/stderr、远程 agentDir、manifest、个人 layer、私有路径和凭据不得进入摘要、日志或持久化状态。transport、agentbrew-unavailable、remote-check、protocol、local 错误必须可区分。
+- 检查不获取 operation lock，不写 targets/state/result。TUI 证据只保留在会话内；CLI 输出同样只含公开摘要。
+
+### 22.3 Targets 交互与状态
+
+- 首屏只读取本地清单并显示目标计数，远程初始为 unknown；启动及普通 Overview 刷新不得自动 SSH。
+- `t` 打开 Targets，↑/↓ 选择，`r` 只检查选中项，`v` 展开允许的连接和检查详情。数字 1–6 必须保留原页面，不因新增菜单改变。
+- 检查中保留列表并标记 checking，同一时刻只允许一个操作。Esc 中止在途只读进程并恢复检查前状态；q 等待 settled 后恢复终端。其他目标不得因单目标成功、失败或取消而改变状态。
+- 状态必须区分 unknown、checking、healthy、attention、offline、unavailable、error；offline 和 unavailable 不计入 healthy。会话结果重新打开 Targets 可复用，但新会话不得沿用为当前健康。
+- `--write` 下 Targets 仍只有检查能力，页面必须显示 `no remote updates`。本阶段 Enter 不得进入仍使用本机 Context 的假远程页面。
+
+### 22.4 本阶段非目标与后续门槛
+
+M3a 不实现远程聚焦 diff/update、远程 apply、批量 Deploy、sudo/root 切换、目标清单 TUI 编辑或持久健康缓存。后续 M3b/M3c 必须分别设计并验证目标独立解析、授权、锁、快照、doctor、失败隔离和共享运行时保护，不得由只读检查成功推断远程更新已授权或可用。

@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import { parseArgs } from "node:util";
 import { runInteractiveAdopt, writeAdoptionProposal } from "./adopt.js";
 import { bundlePlanCommand } from "./bundle-plan.js";
@@ -12,14 +11,17 @@ import { resolveCommand } from "./resolve-cli.js";
 import { renderResult } from "./result-view.js";
 import { sourceCommand, type SourceAction } from "./source-cli.js";
 import { prepareContextSources, sourceInputError } from "./source-context.js";
+import { targetCommand } from "./targets.js";
 import { canUseTerminalMenu } from "./terminal-menu.js";
 import { createTerminalStyle } from "./terminal.js";
 import { runTui } from "./tui.js";
 import type { CommandResult, OverallStatus } from "./types.js";
+import { AGENTBREW_VERSION } from "./version.js";
 
 const HELP = `Usage: agentbrew [options]
        agentbrew <inspect|diff|doctor|update|resolve|explain|adopt|apply> [options]
        agentbrew source [set|list|refresh|clear] [options]
+       agentbrew target [list|check <id>] [options]
        agentbrew release create --layer team=<file> --output <file> [options]
 
 Local-first Pi and herdr environment inspection, selective initialization,
@@ -37,6 +39,7 @@ Commands:
   adopt         Create a separate personal-layer proposal; do not change resources
   apply         Apply a reviewed typed plan from --plan <file>
   source        Set, list, refresh, or clear this target's registered layer inputs
+  target        List configured targets or run one read-only target check
   release       Publish verified team resources as a new Bundle Release
 
 Options:
@@ -82,11 +85,6 @@ function exitCode(status: OverallStatus): number {
   return 1;
 }
 
-function packageVersion(): string {
-  const manifest = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  return String(manifest.version);
-}
-
 export async function runCli(argv: string[], io: CliIO = processIO): Promise<number> {
   const interactive = io.interactive ?? Boolean((io.input as any).isTTY && (io.output as any).isTTY);
   try {
@@ -120,7 +118,7 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
     });
 
     if (values.version) {
-      io.output.write(`${packageVersion()}\n`);
+      io.output.write(`${AGENTBREW_VERSION}\n`);
       return 0;
     }
     if (values.help) {
@@ -154,13 +152,17 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
     const command = positionals[0] ?? "init";
     const sourceAction = positionals[1] ?? "list";
     const releaseAction = positionals[1] ?? "create";
-    const commands = ["init", "apply", "inspect", "diff", "doctor", "update", "resolve", "explain", "adopt", "source", "release"];
+    const targetAction = positionals[1] ?? "list";
+    const commands = ["init", "apply", "inspect", "diff", "doctor", "update", "resolve", "explain", "adopt", "source", "release", "target"];
     if (!commands.includes(command) || (command === "source"
       ? positionals.length > 2 || !["set", "list", "clear", "refresh"].includes(sourceAction)
       : command === "release"
         ? positionals.length > 2 || releaseAction !== "create"
-        : positionals.length > 1)) {
-      throw new Error("expected a supported command, source [set|list|clear], or release create");
+        : command === "target"
+          ? !["list", "check"].includes(targetAction)
+            || (targetAction === "list" ? positionals.length > 2 : positionals.length !== 3)
+          : positionals.length > 1)) {
+      throw new Error("expected a supported command, source [set|list|clear|refresh], target [list|check <id>], or release create");
     }
     if (values["dry-run"] && command !== "update") throw new Error("--dry-run is only valid with update");
     if (values.selftest && !["update", "doctor", "release"].includes(command)) throw new Error("--selftest is only valid with update, doctor, or release create");
@@ -235,6 +237,8 @@ export async function runCli(argv: string[], io: CliIO = processIO): Promise<num
       result = releaseCreateCommand(context, values.output!, values["host-range"]);
     } else if (command === "source") {
       result = sourceCommand(context, sourceAction as SourceAction, values.git ?? []);
+    } else if (command === "target") {
+      result = await targetCommand(context, targetAction as "list" | "check", positionals[2]);
     } else {
       result = await updateCommand(context);
     }

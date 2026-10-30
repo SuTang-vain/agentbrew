@@ -2,12 +2,13 @@
 
 Agentbrew is a local-first CLI for Pi/herdr configuration, selective initialization, compatibility-resolved updates, and health checks. Shared files describe resource intent; each machine keeps its own Pi host links, resolved packages, ownership, plans, and health evidence.
 
-This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2b-2 + M2c**. It is not the complete product described in `docs/PRD.md`.
+This repository implements **M1a + M1b + M2a + M2b-0 + M2b-1 + M2b-2 + M2c + M3a**. It is not the complete product described in `docs/PRD.md`.
 
 ## What works now
 
-- A resident, read-only-by-default TUI opened by bare `agentbrew`, with Overview, Health, Differences, Update preview, Sources, and Help pages; `agentbrew --write` explicitly enables confirmed resolved Bundle updates.
+- A resident, read-only-by-default TUI opened by bare `agentbrew`, with Overview, Targets, Health, Differences, Update preview, Sources, and Help pages; `agentbrew --write` explicitly enables confirmed resolved Bundle updates on the local target only.
 - Read-only `inspect`, `diff`, `doctor`, `explain`, and `resolve`.
+- Local/SSH target registration, `target list`, and explicit single-target read-only checks with sanitized, session-only evidence; no SSH deployment or remote update.
 - Guided `init`: Observe, Adopt, Repair, Manage, and selective Fresh install.
 - Bundle `update` with target-host resolution, host-first execution, exact extension versions, locking, snapshots, and final health verification.
 - The previous native `update` for configurations without explicit or registered layers.
@@ -47,18 +48,39 @@ node dist/bin/agentbrew.js --help
 
 Run `agentbrew` in a capable interactive terminal. It opens a foreground, full-screen workspace rather than a daemon. The workspace is read-only by default:
 
-- **Overview** summarizes the local target, Pi/herdr, health, differences, and active sources.
-- **Health** and **Differences** reuse doctor and diff without repairing anything.
+- **Overview** shows the running Agentbrew version in its title and summarizes the local target, Pi/herdr, health, differences, active sources, and configured targets.
+- **Targets** lists local and SSH targets without connecting at startup. Press `t` to open it, ↑/↓ to select, and `r` to check only the selected target; `v` shows allowed connection and health details. Remote evidence lasts only for the current session, and this page never offers remote updates, including with `--write`.
+- **Health** and **Differences** reuse doctor and diff without repairing anything. Their headings show health or difference counts; the concise view keeps failures, warnings, differences, and planned steps visible while hiding routine PASS and resolution evidence. Press `v` to expand or collapse details without running the operation again.
 - **Update preview** uses the same update path with `dryRun=true`; opening it may fetch release/npm metadata for a Bundle and reports each request while it resolves, but never acquires the write lock or installs anything. The page states `preview: ready · N update(s) · no writes` (or `up to date`), labels `r` as re-check, and without registered sources explains how to obtain a resolved plan. The last successful preview is cached for the session and shows its age; `r` forces a fresh resolution.
-- **Sources** explains explicit or registered layers. **Help** lists keyboard controls and explicit commands for other write operations.
+- **Sources** explains explicit or registered layers and counts Git-backed inputs. Here `r` only re-reads local bindings and recorded commits; advancing Git requires the explicit `agentbrew source refresh` command. **Help** lists keyboard controls and other CLI operations, including Release publication.
 
-Use ↑/↓ and Enter to navigate, `1`–`6` to jump straight to a page, `r` to refresh, and q or Ctrl+C to exit. `?` opens Help without discarding the page behind it, and Esc returns to that page (or to Overview from a result page). While a preview is resolving, Esc aborts its metadata requests and restores the previous page with a cancellation notice. A requested exit still waits for an active read-only preview to settle; that footer also shows elapsed time, and hint text shrinks on narrow terminals instead of hiding the exit key. Re-opening a resolved preview serves the cached result with a `cached Ns ago` line until `r` refreshes it; nothing is persisted. Normal q/EOF exit returns `0`; page health or update results do not change the workspace exit status, so automation must use the explicit structured commands instead.
+Use ↑/↓ and Enter to navigate, PageUp/PageDown to scroll a viewport, Home/End to jump to either end, `1`–`6` to open the existing pages, `t` for Targets, `r` to refresh, and q or Ctrl+C to exit. `?` opens Help without discarding the page behind it, and Esc returns to that page (or to Overview from a result page). While a preview is resolving, Esc aborts its metadata requests and restores the previous page with a cancellation notice. A requested exit still waits for an active read-only preview to settle; that footer also shows elapsed time, and hint text shrinks on narrow terminals instead of hiding the exit key. Re-opening a resolved preview serves the cached result with a `cached Ns ago` line until `r` refreshes it; nothing is persisted. Normal q/EOF exit returns `0`; page health or update results do not change the workspace exit status, so automation must use the explicit structured commands instead.
 
 Applying from the workspace is opt-in: start it with `agentbrew --write` in a capable TTY, without a subcommand, JSON, or another execution option. Only a successful resolved Bundle preview containing a Pi host or external npm package version update offers `u apply`. Native, failed, blocked, up-to-date, and repairs-only previews cannot be applied from the TUI; use the explicit CLI commands for those cases.
 
-The `u apply` confirmation screen lists host and package version changes, any planned herdr rebuild, and the facts that selftest is not run and rollback is not automatic. Cancel is selected by default; Cancel or Esc writes nothing. After confirmation, the update re-resolves metadata and revalidates current sources and local state before writing—the cached preview is not an authorization. The write cannot be cancelled, and an exit request waits for it to settle. The result page reports the actual outcome and reminds you to restart Pi when the host or extensions changed.
+The `u apply` confirmation screen lists host and package version changes, any planned herdr rebuild, and the facts that selftest is not run and rollback is not automatic. Update now and Cancel stay visible while a long package list scrolls; Cancel is selected by default, and Cancel or Esc writes nothing. After confirmation, the update re-resolves metadata and revalidates current sources and local state before writing—the cached preview is not an authorization. The write cannot be cancelled, and an exit request waits for it to settle. The result page reports the actual outcome and reminds you to restart Pi when the host or extensions changed.
 
-Startup and ordinary refreshes perform only local read-only checks, even with `--write`. Without `--write`, the workspace has no executable write action and never runs a real update, init, typed-plan apply, source set/clear, selftest, Reset, or Agentbrew self-update. With `--write`, only the confirmed resolved Bundle update described above can write; all other supported operations remain explicit CLI commands. Non-TTY bare invocation prints help, while non-TTY `--write` is a usage error. Terminals without visual/raw-mode support retain the line-oriented init fallback for ordinary bare invocation; JSON and explicit subcommands never open the TUI.
+Startup and ordinary refreshes perform only local read-only checks and never open SSH connections, even with `--write`. Without `--write`, the workspace has no executable write action and never runs a real update, init, typed-plan apply, source set/refresh/clear, selftest, Reset, or Agentbrew self-update. With `--write`, only the confirmed resolved Bundle update described above can write on the local target; all other supported operations, including every remote operation, remain read-only in the TUI. Non-TTY bare invocation prints help, while non-TTY `--write` is a usage error. Terminals without visual/raw-mode support retain the line-oriented init fallback for ordinary bare invocation; JSON and explicit subcommands never open the TUI.
+
+## Read-only local and SSH targets
+
+The implicit `local` target uses the current Pi context. Register remote targets in `$XDG_CONFIG_HOME/agentbrew/targets.json` (or `$HOME/.config/agentbrew/targets.json`); `AGENTBREW_TARGETS_FILE` overrides the path for an explicit run or sandbox:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "agentbrew-targets",
+  "targets": [
+    { "id": "linux-dev", "connection": { "type": "ssh", "destination": "alice@build.example.com" } }
+  ]
+}
+```
+
+Use `agentbrew target list` to inspect the registry and `agentbrew target check linux-dev` to check exactly one target. The SSH call uses BatchMode and the target user's own SSH configuration and credentials, then runs `agentbrew init --json` on that target. Agentbrew must be available on the remote non-interactive PATH. Use SSH config aliases for custom ports or advanced connection options; credentials and arbitrary command fields are rejected.
+
+Remote output is validated and reduced to public health evidence: classification, Pi/herdr versions, check/difference counts, timestamp, and error category. Transport failure, unavailable remote Agentbrew, and protocol errors remain distinct. Raw remote output, private paths, manifests, personal layers, and secrets are not returned or persisted. TUI evidence is session-only; a fresh session starts remote targets as `unknown` and never probes them automatically.
+
+This is M3a only: remote focus, diff/update, apply, sudo switching, and multi-target Deploy are not implemented.
 
 ## Try it without touching real configuration
 
@@ -69,7 +91,7 @@ npm install
 npm run sandbox -- --scenario bundle
 ```
 
-The sandbox supplies mock Pi/npm/herdr executables and isolated HOME/state directories. The `bundle`, `release`, `git`, and `artifact-failure` scenarios also start a loopback-only release/registry/installer metadata service and pre-authorize disposable resources for update demonstrations; it serves metadata only, not package tarballs. Everything stops or resets when you leave or restart the sandbox. It does not use your real Pi, herdr, chezmoi, or global package configuration. Do not run repository build/test commands inside the mock shell because its `npm` is a test double.
+The sandbox supplies mock Pi/npm/herdr executables and isolated HOME/state directories. The `bundle`, `release`, `git`, and `artifact-failure` scenarios also start a loopback-only release/registry/installer metadata service and pre-authorize disposable resources for update demonstrations; it serves metadata only, not package tarballs. The `targets` scenario uses a mock `ssh` executable and a disposable registry, never a real server. Everything stops or resets when you leave or restart the sandbox. It does not use your real Pi, herdr, chezmoi, or global package configuration. Do not run repository build/test commands inside the mock shell because its `npm` is a test double.
 
 Available scenarios:
 
@@ -83,6 +105,7 @@ npm run sandbox -- --scenario bundle    # healthy target plus three config layer
 npm run sandbox -- --scenario release   # fixed team Release and reviewed host artifacts
 npm run sandbox -- --scenario git       # registered local bare-Git source and refresh
 npm run sandbox -- --scenario artifact-failure # fail before Pi/npm/herdr execution
+npm run sandbox -- --scenario targets  # local target plus mock SSH/offline targets
 ```
 
 Starting a scenario resets its disposable files. Type `exit` to leave.
@@ -408,10 +431,11 @@ The operation lock is conservative: an existing lock stops modification. After a
 - `src/init.ts`, `src/init-cli.ts`, `src/init-apply.ts`: first-use detection and selective initialization.
 - `src/plan.ts`, `src/resolved-update.ts`, `src/immutable-npm.ts`: update path selection, resolved execution, and staged npm lock plans.
 - `src/source-state.ts`, `src/sources.ts`, `src/source-cli.ts`, `src/source-context.ts`, `src/source-git.ts`: strict per-target registration, immutable Git caches, and repeatable source preparation.
+- `src/targets.ts`: strict target registration, selected local/SSH checks, and sanitized public evidence.
 - `src/providers/`: Pi and herdr integrations.
 - `src/terminal*.ts`, `src/result-view.ts`: terminal styling, keyboard menus, and shared result presentation.
 - `src/tui.ts`, `src/tui-view.ts`: resident read-only-by-default workspace, keyboard parsing, bounded rendering, confirmed updates, and terminal restoration.
 - `test/`: isolated provider/CLI/Bundle/interaction tests, including exact npm updates and loopback metadata.
 - `scripts/sandbox.*`: disposable mock environments and their loopback metadata service.
 
-`docs/PRD.md` contains the long-term product contract and the detailed M2a/M2b/M2c execution semantics. This README describes only the implemented slice.
+`docs/PRD.md` contains the long-term product contract and the detailed M2a/M2b/M2c/M3a execution semantics. This README describes only the implemented slice.

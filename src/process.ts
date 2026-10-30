@@ -13,6 +13,7 @@ interface ProcessOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeout?: number;
+  signal?: AbortSignal;
 }
 
 export function redact(value: string): string {
@@ -73,11 +74,18 @@ export function runProcessAsync(command: string, args: string[], options: Proces
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const abort = (): void => {
+      failure = new Error(`${command} cancelled`);
+      failure.name = "AbortError";
+      child.kill("SIGTERM");
+    };
     const finish = (status: number | null, error?: Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ command, args: [...args], status, stdout, stderr, ...(error ?? failure ? { error: error ?? failure } : {}) });
+      options.signal?.removeEventListener("abort", abort);
+      const cause = failure ?? error;
+      resolve({ command, args: [...args], status, stdout, stderr, ...(cause ? { error: cause } : {}) });
     };
     const append = (stream: "stdout" | "stderr", chunk: string): void => {
       if (stream === "stdout") stdout += chunk;
@@ -95,5 +103,7 @@ export function runProcessAsync(command: string, args: string[], options: Proces
       failure = new Error(`${command} timed out after ${options.timeout ?? 120_000} ms`);
       child.kill("SIGTERM");
     }, options.timeout ?? 120_000);
+    if (options.signal?.aborted) abort();
+    else options.signal?.addEventListener("abort", abort, { once: true });
   });
 }
